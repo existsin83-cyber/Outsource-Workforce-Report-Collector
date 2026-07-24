@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "outsource-mail-collector"
+version = "0.1.0"
+description = "Outlook 외주 업무보고 메일을 수집/파싱하여 Excel 취합표에 반영하는 Windows 데스크톱 도구"
+requires-python = ">=3.12"
+dependencies = [
+    "pyside6",
+    "pywin32; platform_system=='Windows'",
+    "beautifulsoup4",
+    "lxml",
+    "pydantic>=2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+outsource-mail-collector = "outsource_mail_collector.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"outsource_mail_collector.infrastructure.db" = ["schema.sql"]

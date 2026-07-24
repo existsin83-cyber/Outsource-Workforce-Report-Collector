@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# 실 업무 메일/추출 샘플 - 회사 데이터라 git에 올리지 않음
+/samples/
+/tools/poc_output/
+
+# 런타임 데이터
+*.db
+/logs/
+/backups/
