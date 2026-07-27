@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -42,6 +42,14 @@ _COLUMNS = [
 
 # 편집 가능한(더블클릭으로 값 수정) 컬럼 인덱스 — 목업의 점선 밑줄 셀.
 _EDITABLE_COLUMNS = {3, 4, 5, 6, 7, 8}
+_FIELD_BY_COLUMN = {
+    3: "equipment_name",
+    4: "tracking_no",
+    5: "vendor_name",
+    6: "actual_headcount",
+    7: "daily_man_day",
+    8: "cumulative_man_day",
+}
 
 _STATUS_COLORS: dict[ReviewStatus, tuple[str, str]] = {
     ReviewStatus.NORMAL: ("#2e7d32", "#e8f5e9"),
@@ -71,6 +79,8 @@ class ReviewRow:
     cumulative_man_day: str
     confidence: float
     status: ReviewStatus
+    record_id: int = 0
+    mail_entry_id: str = ""
 
 
 def _confidence_bar(confidence: float) -> QProgressBar:
@@ -102,19 +112,11 @@ def _status_badge(status: ReviewStatus) -> QLabel:
     return label
 
 
-def _row_actions() -> QWidget:
-    container = QWidget()
-    layout = QHBoxLayout(container)
-    layout.setContentsMargins(0, 0, 0, 0)
-    for text in ("원본", "제외"):
-        button = QToolButton()
-        button.setText(text)
-        button.setAutoRaise(True)
-        layout.addWidget(button)
-    return container
-
-
 class ReviewGridWidget(QTableWidget):
+    edit_requested = Signal(int, str, str)
+    original_requested = Signal(str)
+    exclude_requested = Signal(int)
+
     def __init__(self, rows: list[ReviewRow] | None = None, parent: QWidget | None = None) -> None:
         super().__init__(0, len(_COLUMNS), parent)
         self.setHorizontalHeaderLabels(_COLUMNS)
@@ -124,18 +126,32 @@ class ReviewGridWidget(QTableWidget):
         self.setEditTriggers(
             QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.EditKeyPressed
         )
+        self.itemChanged.connect(self._emit_edit)
         if rows:
             self.set_rows(rows)
 
     def set_rows(self, rows: list[ReviewRow]) -> None:
+        self.blockSignals(True)
         self.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
             self._populate_row(row_index, row)
+        self.blockSignals(False)
+
+    def checked_record_ids(self) -> list[int]:
+        record_ids = []
+        for row_index in range(self.rowCount()):
+            item = self.item(row_index, 0)
+            if item and item.checkState() is Qt.CheckState.Checked:
+                record_id = item.data(Qt.ItemDataRole.UserRole)
+                if record_id is not None:
+                    record_ids.append(int(record_id))
+        return record_ids
 
     def _populate_row(self, row_index: int, row: ReviewRow) -> None:
         check_item = QTableWidgetItem()
         check_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
         check_item.setCheckState(Qt.CheckState.Unchecked)
+        check_item.setData(Qt.ItemDataRole.UserRole, row.record_id)
         self.setItem(row_index, 0, check_item)
 
         values = [
@@ -160,7 +176,42 @@ class ReviewGridWidget(QTableWidget):
 
         self.setCellWidget(row_index, 9, _confidence_bar(row.confidence))
         self.setCellWidget(row_index, 10, _status_badge(row.status))
-        self.setCellWidget(row_index, 11, _row_actions())
+        self.setCellWidget(row_index, 11, self._row_actions(row))
+
+    def _row_actions(self, row: ReviewRow) -> QWidget:
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        original = QToolButton()
+        original.setText("원본")
+        original.setAutoRaise(True)
+        original.clicked.connect(
+            lambda _checked=False, mail_id=row.mail_entry_id: self.original_requested.emit(
+                mail_id
+            )
+        )
+        exclude = QToolButton()
+        exclude.setText("제외")
+        exclude.setAutoRaise(True)
+        exclude.clicked.connect(
+            lambda _checked=False, record_id=row.record_id: self.exclude_requested.emit(
+                record_id
+            )
+        )
+        layout.addWidget(original)
+        layout.addWidget(exclude)
+        return container
+
+    def _emit_edit(self, item: QTableWidgetItem) -> None:
+        field_name = _FIELD_BY_COLUMN.get(item.column())
+        if field_name is None:
+            return
+        identity = self.item(item.row(), 0)
+        if identity is None:
+            return
+        record_id = identity.data(Qt.ItemDataRole.UserRole)
+        if record_id is not None:
+            self.edit_requested.emit(int(record_id), field_name, item.text())
 
 
 # ponytail: 실 서비스 계층(Outlook 조회 -> 파싱 -> DB 저장) 연결 전까지 그리드 구성

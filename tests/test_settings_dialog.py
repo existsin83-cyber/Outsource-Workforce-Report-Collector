@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QApplication, QTableWidgetItem
 
+from outsource_mail_collector.application.settings_service import SettingsService
 from outsource_mail_collector.infrastructure.db.repository import SQLiteRepository
 from outsource_mail_collector.ui.settings_dialog import SettingsDialog
 from outsource_mail_collector.ui.workers import FolderLoadWorker
@@ -14,7 +15,7 @@ def _app() -> QApplication:
 def test_settings_dialog_round_trips_general_settings(tmp_path):
     _app()
     repository = SQLiteRepository(tmp_path / "collector.db")
-    dialog = SettingsDialog(repository, FakeOutlookAdapter())
+    dialog = SettingsDialog(SettingsService(repository, FakeOutlookAdapter()))
 
     dialog.set_general_values(
         "Inbox/전장기술팀",
@@ -31,7 +32,7 @@ def test_settings_dialog_round_trips_general_settings(tmp_path):
 def test_settings_dialog_saves_employee_and_vendor_rows(tmp_path):
     _app()
     repository = SQLiteRepository(tmp_path / "collector.db")
-    dialog = SettingsDialog(repository, FakeOutlookAdapter())
+    dialog = SettingsDialog(SettingsService(repository, FakeOutlookAdapter()))
 
     employee_row = dialog.add_employee_row()
     dialog.employee_table.setItem(employee_row, 0, QTableWidgetItem("홍길동"))
@@ -52,10 +53,13 @@ def test_settings_dialog_saves_employee_and_vendor_rows(tmp_path):
     assert vendor.aliases == ("A사", "협력 A")
 
 
-def test_folder_worker_emits_real_adapter_folder_results():
+def test_folder_worker_emits_real_adapter_folder_results(tmp_path):
     _app()
     worker = FolderLoadWorker(
-        FakeOutlookAdapter(["Inbox", "Inbox/전장기술팀"])
+        SettingsService(
+            SQLiteRepository(tmp_path / "collector.db"),
+            FakeOutlookAdapter(["Inbox", "Inbox/전장기술팀"]),
+        )
     )
     emitted: list[list[str]] = []
     worker.loaded.connect(emitted.append)
@@ -68,7 +72,7 @@ def test_folder_worker_emits_real_adapter_folder_results():
 def test_apply_folder_values_preserves_current_selection(tmp_path):
     _app()
     repository = SQLiteRepository(tmp_path / "collector.db")
-    dialog = SettingsDialog(repository, FakeOutlookAdapter())
+    dialog = SettingsDialog(SettingsService(repository, FakeOutlookAdapter()))
     dialog.set_general_values("Inbox/전장기술팀", "", "외주인원_원본")
 
     dialog.apply_folder_values(["Inbox", "Inbox/전장기술팀", "Inbox/기타"])

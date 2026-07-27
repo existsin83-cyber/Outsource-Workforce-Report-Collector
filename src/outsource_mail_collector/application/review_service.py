@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 from outsource_mail_collector.application.errors import InvalidReviewValueError
+from outsource_mail_collector.application.models import (
+    ReviewRecord,
+    review_record_from_stored,
+)
+from datetime import date
 from outsource_mail_collector.domain.models import ReviewStatus
 from outsource_mail_collector.infrastructure.db.repository import (
     SQLiteRepository,
@@ -55,6 +60,12 @@ class ReviewService:
         """Open the original message through Outlook without changing its state."""
 
         self._outlook.display_message(mail_entry_id)
+
+    def list_records(self, report_date: date) -> list[ReviewRecord]:
+        return [
+            review_record_from_stored(row)
+            for row in self._repository.list_review_records(report_date)
+        ]
 
     @staticmethod
     def _convert_value(field_name: str, raw_value: str) -> str | float | None:

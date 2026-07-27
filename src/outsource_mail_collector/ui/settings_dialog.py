@@ -24,26 +24,23 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from outsource_mail_collector.application.settings_service import SettingsService
 from outsource_mail_collector.infrastructure.db.repository import (
     DuplicateEntityError,
     Employee,
-    SQLiteRepository,
     Vendor,
 )
-from outsource_mail_collector.infrastructure.outlook_adapter import OutlookAdapter
 from outsource_mail_collector.ui.workers import FolderLoadWorker
 
 
 class SettingsDialog(QDialog):
     def __init__(
         self,
-        repository: SQLiteRepository,
-        outlook_adapter: OutlookAdapter,
+        settings_service: SettingsService,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self._repository = repository
-        self._outlook = outlook_adapter
+        self._settings = settings_service
         self._deleted_employee_ids: set[int] = set()
         self._deleted_vendor_ids: set[int] = set()
         self._folder_worker: FolderLoadWorker | None = None
@@ -145,13 +142,14 @@ class SettingsDialog(QDialog):
 
     def _load(self) -> None:
         self.set_general_values(
-            self._repository.get_setting("outlook_folder") or "Inbox",
-            self._repository.get_setting("excel_workbook_path") or "",
-            self._repository.get_setting("excel_sheet_name") or "외주인원_원본",
+            self._settings.get_setting("outlook_folder", "Inbox") or "Inbox",
+            self._settings.get_setting("excel_workbook_path", "") or "",
+            self._settings.get_setting("excel_sheet_name", "외주인원_원본")
+            or "외주인원_원본",
         )
-        for employee in self._repository.list_employees():
+        for employee in self._settings.list_employees():
             self.add_employee_row(employee)
-        for vendor in self._repository.list_vendors():
+        for vendor in self._settings.list_vendors():
             self.add_vendor_row(vendor)
 
     def set_general_values(
@@ -174,7 +172,7 @@ class SettingsDialog(QDialog):
     def refresh_folders(self) -> None:
         if self._folder_worker is not None and self._folder_worker.isRunning():
             return
-        worker = FolderLoadWorker(self._outlook)
+        worker = FolderLoadWorker(self._settings)
         worker.loaded.connect(self.apply_folder_values)
         worker.failed.connect(self._show_folder_error)
         worker.finished.connect(self._folder_worker_finished)
@@ -251,16 +249,16 @@ class SettingsDialog(QDialog):
     def save(self) -> None:
         folder_path = self.folder_combo.currentText().strip() or "Inbox"
         sheet_name = self.sheet_name_edit.text().strip() or "외주인원_원본"
-        self._repository.set_setting("outlook_folder", folder_path)
-        self._repository.set_setting(
+        self._settings.set_setting("outlook_folder", folder_path)
+        self._settings.set_setting(
             "excel_workbook_path", self.excel_path_edit.text().strip()
         )
-        self._repository.set_setting("excel_sheet_name", sheet_name)
+        self._settings.set_setting("excel_sheet_name", sheet_name)
 
         for employee_id in self._deleted_employee_ids:
-            self._repository.delete_employee(employee_id)
+            self._settings.delete_employee(employee_id)
         for vendor_id in self._deleted_vendor_ids:
-            self._repository.delete_vendor(vendor_id)
+            self._settings.delete_vendor(vendor_id)
         self._save_employee_rows()
         self._save_vendor_rows()
         self._deleted_employee_ids.clear()
@@ -279,7 +277,7 @@ class SettingsDialog(QDialog):
             employee_id = (
                 name_item.data(Qt.ItemDataRole.UserRole) if name_item else None
             )
-            saved = self._repository.save_employee(
+            saved = self._settings.save_employee(
                 int(employee_id) if employee_id is not None else None,
                 name,
                 email,
@@ -300,7 +298,7 @@ class SettingsDialog(QDialog):
             vendor_id = (
                 name_item.data(Qt.ItemDataRole.UserRole) if name_item else None
             )
-            saved = self._repository.save_vendor(
+            saved = self._settings.save_vendor(
                 int(vendor_id) if vendor_id is not None else None,
                 name,
                 _split_aliases(alias_item.text() if alias_item else ""),

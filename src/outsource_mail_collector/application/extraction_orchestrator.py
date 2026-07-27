@@ -9,6 +9,7 @@ from outsource_mail_collector.application.models import (
     CollectionError,
     ExtractionResult,
     ReviewRecord,
+    review_record_from_stored,
 )
 from outsource_mail_collector.domain.models import MailRecord
 from outsource_mail_collector.infrastructure.db.repository import (
@@ -37,7 +38,7 @@ class ExtractionOrchestrator:
             if self._repository.is_mail_processed(mail.mail_id):
                 skipped.append(mail.mail_id)
                 review_records.extend(
-                    _to_review_record(row)
+                    review_record_from_stored(row)
                     for row in self._repository.list_review_records(
                         mail_entry_id=mail.mail_id
                     )
@@ -45,7 +46,9 @@ class ExtractionOrchestrator:
                 continue
             try:
                 stored = self._process_one(mail, vendor_aliases)
-                review_records.extend(_to_review_record(row) for row in stored)
+                review_records.extend(
+                    review_record_from_stored(row) for row in stored
+                )
             except (ValueError, TypeError, sqlite3.Error) as exc:
                 errors.append(
                     CollectionError(
@@ -92,22 +95,3 @@ def _canonical_vendor(
         return None
     stripped = vendor_name.strip()
     return aliases.get(stripped.casefold(), stripped)
-
-
-def _to_review_record(stored: StoredReviewRecord) -> ReviewRecord:
-    return ReviewRecord(
-        record_id=stored.record_id,
-        mail_entry_id=stored.mail_entry_id,
-        report_date=stored.report_date,
-        sender_name=stored.sender_name,
-        sender_email=stored.sender_email,
-        equipment_name=stored.equipment_name,
-        tracking_no=stored.tracking_no,
-        vendor_name=stored.vendor_name,
-        actual_headcount=stored.actual_headcount,
-        daily_man_day=stored.daily_man_day,
-        cumulative_man_day=stored.cumulative_man_day,
-        confidence=stored.confidence,
-        review_status=stored.review_status,
-        note=stored.note,
-    )

@@ -32,6 +32,8 @@ class MailCollectionService:
                         message="활성 담당자를 먼저 등록해 주세요.",
                     ),
                 ),
+                target_employee_count=0,
+                received_mail_count=0,
             )
 
         start_at = datetime.combine(report_date, time.min)
@@ -84,4 +86,6 @@ class MailCollectionService:
             mails=tuple(mails),
             missing_employees=missing,
             errors=tuple(errors),
+            target_employee_count=len(employees),
+            received_mail_count=len(matching),
         )
