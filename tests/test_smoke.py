@@ -1,6 +1,7 @@
 from datetime import date, datetime
 from pathlib import Path
 
+from outsource_mail_collector.app import build_services
 from outsource_mail_collector.domain.models import MailRecord, ReviewStatus
 from outsource_mail_collector.infrastructure.db.repository import init_db
 
@@ -36,3 +37,11 @@ def test_init_db_creates_tables(tmp_path: Path):
         "action_logs",
     } <= tables
     conn.close()
+
+
+def test_build_services_uses_requested_database(tmp_path: Path):
+    db_path = tmp_path / "collector.db"
+
+    build_services(db_path)
+
+    assert db_path.exists()

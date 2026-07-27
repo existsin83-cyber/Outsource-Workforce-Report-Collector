@@ -5,6 +5,7 @@ from datetime import date, datetime
 
 import pytest
 
+import outsource_mail_collector.infrastructure.db.repository as repository_module
 from outsource_mail_collector.domain.models import (
     EquipmentSection,
     MailRecord,
@@ -35,6 +36,34 @@ def test_setting_round_trip(repository):
 
     assert repository.get_setting("outlook_folder") == "Inbox/전장기술팀"
     assert repository.get_setting("missing") is None
+
+
+def test_repository_closes_connection_after_each_public_operation(
+    monkeypatch, tmp_path
+):
+    opened = []
+    real_connect = sqlite3.connect
+
+    class TrackingConnection(sqlite3.Connection):
+        closed = False
+
+        def close(self):
+            self.closed = True
+            super().close()
+
+    def tracking_connect(*args, **kwargs):
+        kwargs["factory"] = TrackingConnection
+        connection = real_connect(*args, **kwargs)
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(repository_module.sqlite3, "connect", tracking_connect)
+    repository = SQLiteRepository(tmp_path / "collector.db")
+
+    repository.get_setting("outlook_folder")
+
+    assert opened
+    assert all(connection.closed for connection in opened)
 
 
 def test_employee_and_vendor_round_trip_normalizes_email(repository):
