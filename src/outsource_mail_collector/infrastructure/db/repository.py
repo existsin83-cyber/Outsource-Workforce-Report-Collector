@@ -419,16 +419,24 @@ class SQLiteRepository:
         return int(cursor.lastrowid)
 
     def list_review_records(
-        self, report_date: date | None = None
+        self,
+        report_date: date | None = None,
+        mail_entry_id: str | None = None,
     ) -> list[StoredReviewRecord]:
         sql = _REVIEW_SELECT
-        parameters: tuple[Any, ...] = ()
+        conditions: list[str] = []
+        parameters: list[Any] = []
         if report_date is not None:
-            sql += " WHERE er.report_date = ?"
-            parameters = (report_date.isoformat(),)
+            conditions.append("er.report_date = ?")
+            parameters.append(report_date.isoformat())
+        if mail_entry_id is not None:
+            conditions.append("er.mail_entry_id = ?")
+            parameters.append(mail_entry_id)
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY er.record_id"
         with self._connect() as conn:
-            rows = conn.execute(sql, parameters).fetchall()
+            rows = conn.execute(sql, tuple(parameters)).fetchall()
         return [_review_from_row(row) for row in rows]
 
     def get_review_record(self, record_id: int) -> StoredReviewRecord:
