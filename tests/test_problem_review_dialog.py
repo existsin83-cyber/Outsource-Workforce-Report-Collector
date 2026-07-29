@@ -36,6 +36,68 @@ def test_mismatch_review_shows_values_and_requires_choice_and_note():
     assert values["resolution_note"] == "계산값 확인"
 
 
+def test_night_issue_review_returns_validated_headcount_corrections():
+    _app()
+    dialog = ProblemReviewDialog(
+        reported_daily=Decimal("3.5"),
+        calculated_daily=None,
+        reported_cumulative=Decimal("10.0"),
+        calculated_cumulative=None,
+        actual_headcount=3,
+        night_headcount=None,
+    )
+
+    assert dialog.actual_headcount_edit.text() == "3"
+    assert dialog.night_headcount_edit.text() == ""
+
+    dialog.night_headcount_edit.setText("1")
+    dialog.confirmed_daily_edit.setText("3.5")
+    dialog.confirmed_cumulative_edit.setText("10.0")
+    dialog.note_edit.setText("혼합 야근 인원 확인")
+
+    assert dialog.values() == {
+        "actual_headcount": 3,
+        "night_headcount": 1,
+        "confirmed_daily_man_day": Decimal("3.5"),
+        "confirmed_cumulative_man_day": Decimal("10.0"),
+        "resolution_note": "혼합 야근 인원 확인",
+    }
+
+
+def test_night_issue_review_rejects_night_above_actual_headcount():
+    _app()
+    dialog = ProblemReviewDialog(
+        actual_headcount=3,
+        night_headcount=None,
+    )
+    dialog.night_headcount_edit.setText("4")
+    dialog.confirmed_daily_edit.setText("3.5")
+    dialog.confirmed_cumulative_edit.setText("10.0")
+    dialog.note_edit.setText("야근 인원 확인")
+
+    with pytest.raises(ValueError):
+        dialog.values()
+
+
+def test_night_issue_review_can_correct_two_missing_headcounts():
+    _app()
+    dialog = ProblemReviewDialog(
+        actual_headcount=None,
+        night_headcount=None,
+        headcount_correction=True,
+    )
+    dialog.actual_headcount_edit.setText("2")
+    dialog.night_headcount_edit.setText("0")
+    dialog.confirmed_daily_edit.setText("2.0")
+    dialog.confirmed_cumulative_edit.setText("8.0")
+    dialog.note_edit.setText("인원 원문 확인")
+
+    values = dialog.values()
+
+    assert values["actual_headcount"] == 2
+    assert values["night_headcount"] == 0
+
+
 def test_duplicate_review_requires_explicit_decision():
     _app()
     dialog = ProblemReviewDialog(duplicate_mode=True)

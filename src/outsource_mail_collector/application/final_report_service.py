@@ -13,7 +13,10 @@ from outsource_mail_collector.application.models import (
     final_report_snapshot_from_stored,
     work_report_row_from_stored,
 )
-from outsource_mail_collector.domain.work_report import WorkReportIssueCode
+from outsource_mail_collector.domain.work_report import (
+    WorkReportIssueCode,
+    man_day_basis,
+)
 from outsource_mail_collector.infrastructure.db.repository import (
     SQLiteRepository,
     StoredWorkReportRow,
@@ -26,6 +29,12 @@ _BLOCKING_ISSUES = {
     WorkReportIssueCode.DUPLICATE_UNRESOLVED,
     WorkReportIssueCode.SERIES_KEY_MISSING,
     WorkReportIssueCode.INVALID_VALUE,
+    WorkReportIssueCode.ACTUAL_HEADCOUNT_INVALID,
+    WorkReportIssueCode.REPORTED_DAILY_INVALID,
+    WorkReportIssueCode.REPORTED_CUMULATIVE_INVALID,
+    WorkReportIssueCode.WORK_ORDER_UNREGISTERED,
+    WorkReportIssueCode.NIGHT_HEADCOUNT_UNRESOLVED,
+    WorkReportIssueCode.NIGHT_HEADCOUNT_INVALID,
 }
 
 
@@ -141,14 +150,42 @@ def _row_blockers(
                 message="작업일을 확인해 주세요.",
             )
         )
+    invalid_headcounts = (
+        row.actual_headcount is not None
+        and row.night_headcount is not None
+        and (
+            row.actual_headcount < 0
+            or row.night_headcount < 0
+            or row.night_headcount > row.actual_headcount
+        )
+    )
+    if (
+        invalid_headcounts
+        and WorkReportIssueCode.NIGHT_HEADCOUNT_INVALID
+        not in row.issue_codes
+    ):
+        blockers.append(
+            FinalizationBlocker(
+                row_id=row.row_id,
+                code=WorkReportIssueCode.NIGHT_HEADCOUNT_INVALID.value,
+                message="야근 인원은 0 이상이며 실제 작업인원 이하여야 합니다.",
+            )
+        )
+    mixed = (
+        row.actual_headcount is not None
+        and row.night_headcount is not None
+        and 0 < row.night_headcount < row.actual_headcount
+    )
     required = (
         row.vendor_name,
         row.business_team,
         row.actual_headcount,
-        row.per_person_man_day,
+        row.night_headcount,
     )
-    if any(value is None or value == "" for value in required) or (
-        not row.tracking_no and not row.equipment_name
+    if (
+        any(value is None or value == "" for value in required)
+        or (row.per_person_man_day is None and not mixed)
+        or (not row.tracking_no and not row.equipment_name)
     ):
         blockers.append(
             FinalizationBlocker(
@@ -181,7 +218,10 @@ def _snapshot_hash(rows: list[StoredWorkReportRow]) -> str:
             "equipment_name": row.equipment_name,
             "business_team": row.business_team,
             "actual_headcount": row.actual_headcount,
-            "per_person_man_day": str(row.per_person_man_day),
+            "night_headcount": row.night_headcount,
+            "man_day_basis": man_day_basis(
+                row.actual_headcount, row.night_headcount
+            ),
             "confirmed_daily_man_day": str(row.confirmed_daily_man_day),
             "confirmed_cumulative_man_day": str(
                 row.confirmed_cumulative_man_day

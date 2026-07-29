@@ -8,6 +8,7 @@ from fixtures import (
     DATE_BODY_CONFLICTING,
     DATE_SUBJECT_DOTTED,
     FORMAT_B_NUMBERED_VENDOR_PER_UNIT,
+    FORMAT_D_INLINE_REPORTED_DAILY,
 )
 from outsource_mail_collector.application.extraction_orchestrator import (
     ExtractionOrchestrator,
@@ -31,6 +32,17 @@ def test_process_parses_persists_and_returns_review_records(repository):
     assert repository.is_mail_processed(mail.mail_id)
     assert result.records[0].mail_entry_id == mail.mail_id
     assert result.records[0].sender_name == "홍길동"
+
+
+def test_process_preserves_night_headcount_and_reported_daily_man_day(repository):
+    mail = _mail_record("ENTRY-DAILY", FORMAT_D_INLINE_REPORTED_DAILY)
+
+    result = ExtractionOrchestrator(repository).process([mail])
+
+    assert result.errors == ()
+    assert len(result.records) == 2
+    assert result.records[0].night_headcount == 1.0
+    assert result.records[0].daily_man_day == 1.5
 
 
 def test_process_existing_entry_id_returns_saved_rows_without_duplicate(repository):

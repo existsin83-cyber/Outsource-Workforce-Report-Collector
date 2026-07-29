@@ -10,6 +10,7 @@ from outsource_mail_collector.domain.models import MailRecord, ReviewStatus
 from outsource_mail_collector.domain.work_report import (
     RowSource,
     WorkReportIssueCode,
+    man_day_basis,
 )
 from outsource_mail_collector.infrastructure.db.repository import (
     Employee,
@@ -47,6 +48,7 @@ class ReviewRecord:
     tracking_no: str | None
     vendor_name: str | None
     actual_headcount: float | None
+    night_headcount: float | None
     daily_man_day: float | None
     cumulative_man_day: float | None
     confidence: float
@@ -84,6 +86,13 @@ class WorkReportRow:
     included: bool
     warning_confirmed: bool
     resolution_note: str | None
+    night_headcount: int | None = None
+
+    @property
+    def per_person_display(self) -> str:
+        """Return the display-only basis derived from headcount fields."""
+
+        return man_day_basis(self.actual_headcount, self.night_headcount)
 
 
 @dataclass(frozen=True)
@@ -110,7 +119,8 @@ class FinalReportRow:
     equipment_name: str | None
     business_team: str | None
     actual_headcount: int
-    per_person_man_day: Decimal
+    night_headcount: int | None
+    man_day_basis: str
     confirmed_daily_man_day: Decimal
     confirmed_cumulative_man_day: Decimal
 
@@ -165,6 +175,7 @@ def review_record_from_stored(stored: StoredReviewRecord) -> ReviewRecord:
         tracking_no=stored.tracking_no,
         vendor_name=stored.vendor_name,
         actual_headcount=stored.actual_headcount,
+        night_headcount=stored.night_headcount,
         per_person_man_day=stored.per_person_man_day,
         daily_man_day=stored.daily_man_day,
         cumulative_man_day=stored.cumulative_man_day,
@@ -190,6 +201,7 @@ def work_report_row_from_stored(stored: StoredWorkReportRow) -> WorkReportRow:
         equipment_name=stored.equipment_name,
         business_team=stored.business_team,
         actual_headcount=stored.actual_headcount,
+        night_headcount=stored.night_headcount,
         per_person_man_day=stored.per_person_man_day,
         reported_daily_man_day=stored.reported_daily_man_day,
         calculated_daily_man_day=stored.calculated_daily_man_day,
@@ -216,7 +228,8 @@ def final_report_row_from_stored(stored: StoredFinalReportRow) -> FinalReportRow
         equipment_name=stored.equipment_name,
         business_team=stored.business_team,
         actual_headcount=stored.actual_headcount,
-        per_person_man_day=stored.per_person_man_day,
+        night_headcount=stored.night_headcount,
+        man_day_basis=stored.man_day_basis,
         confirmed_daily_man_day=stored.confirmed_daily_man_day,
         confirmed_cumulative_man_day=stored.confirmed_cumulative_man_day,
     )

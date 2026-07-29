@@ -10,7 +10,7 @@ from outsource_mail_collector.application.report_renderer import (
 )
 
 
-def test_renderer_uses_nine_approved_columns_and_escapes_html() -> None:
+def test_renderer_uses_ten_approved_columns_and_escapes_html() -> None:
     snapshot = _snapshot(
         rows=(
             _row(
@@ -29,6 +29,7 @@ def test_renderer_uses_nine_approved_columns_and_escapes_html() -> None:
         "장비명",
         "사업팀",
         "실제 작업인원",
+        "야근 인원",
         "인당 공수",
         "투입 공수",
         "누적 공수",
@@ -37,7 +38,8 @@ def test_renderer_uses_nine_approved_columns_and_escapes_html() -> None:
     assert rendered.html.index("일자") < rendered.html.index("거래처명")
     assert "업체 &lt;A&gt;" in rendered.html
     assert "장비 &amp; 1" in rendered.html
-    assert "2\t1.5\t3.0\t12.0" in rendered.plain_text
+    assert "실제 작업인원\t야근 인원\t인당 공수" in rendered.plain_text
+    assert "3\t1\t혼합\t3.5\t20.0" in rendered.plain_text
     assert "ENTRY" not in rendered.html
     assert "issue" not in rendered.html
     assert "calculated" not in rendered.html
@@ -54,7 +56,7 @@ def test_renderer_repeats_header_at_each_date_boundary() -> None:
 
     rendered = HtmlReportRenderer().render(snapshot)
 
-    assert rendered.html.count("<th") == 18
+    assert rendered.html.count("<th") == 20
     assert rendered.plain_text.count("일자\t거래처명") == 2
     assert "2026. 07. 29 (수) ~ 2026. 07. 30 (목) 전장 외주 공수표" in (
         rendered.html
@@ -91,6 +93,9 @@ def _row(
     vendor_name: str = "업체A",
     tracking_no: str = "AB260101",
     equipment_name: str = "장비 1",
+    actual_headcount: int = 3,
+    night_headcount: int | None = 1,
+    man_day_basis: str = "혼합",
 ) -> FinalReportRow:
     return FinalReportRow(
         source_row_id=1,
@@ -100,8 +105,9 @@ def _row(
         tracking_no=tracking_no,
         equipment_name=equipment_name,
         business_team="WA",
-        actual_headcount=2,
-        per_person_man_day=Decimal("1.5"),
-        confirmed_daily_man_day=Decimal("3.0"),
-        confirmed_cumulative_man_day=Decimal("12.0"),
+        actual_headcount=actual_headcount,
+        night_headcount=night_headcount,
+        man_day_basis=man_day_basis,
+        confirmed_daily_man_day=Decimal("3.5"),
+        confirmed_cumulative_man_day=Decimal("20.0"),
     )

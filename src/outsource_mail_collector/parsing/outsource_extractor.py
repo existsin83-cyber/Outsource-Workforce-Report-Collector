@@ -30,6 +30,9 @@ _HEADCOUNT_INLINE = re.compile(
     r"(?:\s*\(?\s*야근\s*[:：]?\s*(?P<night>\d+(?:\.\d+)?)\s*명\)?)?"
 )
 _TOTAL_MAN_DAY = re.compile(r"총\s*공수\s*[:：]?\s*(?P<value>\d+(?:\.\d+)?)\s*(?:MD|공수)?")
+_DAILY_MAN_DAY = re.compile(
+    r"투입\s*공수\s*[:：]?\s*(?P<value>\d+(?:\.\d+)?)\s*(?:MD|공수)?"
+)
 _CUMULATIVE_MAN_DAY = re.compile(r"누적\s*공수\s*[:：]?\s*(?P<value>\d+(?:\.\d+)?)\s*공수?")
 _DAY_NIGHT_HEADCOUNT = re.compile(
     r"주간\s*(?P<day>\d+(?:\.\d+)?)\s*,?\s*야간\s*(?P<night>\d+(?:\.\d+)?)"
@@ -96,6 +99,7 @@ def _extract_inline_style(section: EquipmentSection) -> list[OutsourceWorkRecord
         return []  # 외주 인원 언급이 전혀 없음 -> 정상적인 "외주 없음" 케이스
 
     total_match = _TOTAL_MAN_DAY.search(section.section_text)
+    daily_match = _DAILY_MAN_DAY.search(section.section_text)
     note = None
     if total_match:
         # "총 공수" 는 당일/누적 라벨이 없어 의미를 단정할 수 없음 - 추측하지 않는다.
@@ -113,6 +117,9 @@ def _extract_inline_style(section: EquipmentSection) -> list[OutsourceWorkRecord
                 float(headcount_match.group("night"))
                 if headcount_match.group("night") is not None
                 else None
+            ),
+            daily_man_day=(
+                float(daily_match.group("value")) if daily_match else None
             ),
             note=note,
             confidence=confidence,

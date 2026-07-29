@@ -90,6 +90,35 @@ def test_duplicate_employee_email_and_vendor_name_are_rejected(repository):
         repository.save_vendor(None, "협력사A", ["다른 별칭"], True)
 
 
+def test_work_order_mapping_round_trip_normalizes_tracking(repository):
+    vendor = repository.save_vendor(None, "협력사A", [], True)
+
+    mapping = repository.save_work_order_mapping(
+        None,
+        tracking_no=" ab 260101 ",
+        equipment_name="장비 Alpha #1",
+        vendor_id=vendor.vendor_id,
+        business_team="PKG",
+        active=True,
+    )
+
+    assert mapping.normalized_tracking_no == "AB260101"
+    assert mapping.vendor_name == "협력사A"
+    assert repository.list_work_order_mappings() == [mapping]
+
+
+def test_duplicate_active_work_order_tracking_is_rejected(repository):
+    vendor = repository.save_vendor(None, "협력사A", [], True)
+    repository.save_work_order_mapping(
+        None, "AB260101", "장비 1", vendor.vendor_id, "PKG", True
+    )
+
+    with pytest.raises(DuplicateEntityError):
+        repository.save_work_order_mapping(
+            None, " ab 260101 ", "장비 2", vendor.vendor_id, "WA", True
+        )
+
+
 def test_store_extraction_is_atomic_and_deduplicates_entry_id(repository):
     mail = _mail_record()
     section = _section(mail.mail_id)
@@ -193,6 +222,13 @@ def test_additive_migration_preserves_old_rows_and_is_idempotent(tmp_path):
         mail_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(processed_mails)")
         }
+        work_report_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(work_report_rows)")
+        }
+        final_report_columns = {
+            row[1]: (row[2], row[3])
+            for row in conn.execute("PRAGMA table_info(final_report_rows)")
+        }
         tables = {
             row[0]
             for row in conn.execute(
@@ -208,7 +244,15 @@ def test_additive_migration_preserves_old_rows_and_is_idempotent(tmp_path):
         "date_issue_codes_json",
         "work_date_confirmed",
     } <= mail_columns
-    assert {"work_report_rows", "final_reports", "final_report_rows"} <= tables
+    assert {
+        "work_order_mappings",
+        "work_report_rows",
+        "final_reports",
+        "final_report_rows",
+    } <= tables
+    assert "night_headcount" in work_report_columns
+    assert "night_headcount" in final_report_columns
+    assert final_report_columns["per_person_man_day"] == ("TEXT", 1)
 
 
 def test_work_report_rows_round_trip_decimal_values_and_allow_duplicates(
@@ -222,6 +266,7 @@ def test_work_report_rows_round_trip_decimal_values_and_allow_duplicates(
         equipment_name="장비 1",
         business_team="WA",
         actual_headcount=2,
+        night_headcount=1,
         per_person_man_day=Decimal("1.5"),
         reported_daily_man_day=Decimal("4.0"),
         calculated_daily_man_day=Decimal("3.0"),
@@ -256,9 +301,17 @@ def test_work_report_rows_round_trip_decimal_values_and_allow_duplicates(
     assert duplicate.row_id != first.row_id
     assert manual.source_type is RowSource.MANUAL
     assert manual.mail_entry_id is None
+    assert first.night_headcount == 1
     assert first.reported_daily_man_day == Decimal("4.0")
     assert first.calculated_daily_man_day == Decimal("3.0")
     assert first.issue_codes == (WorkReportIssueCode.DAILY_MISMATCH,)
+
+    updated = repository.update_work_report_row(
+        first.row_id,
+        {"night_headcount": 0},
+        resolution_note="야근 인원 확인",
+    )
+    assert updated.night_headcount == 0
 
 
 def test_confirmation_and_snapshot_are_audited_and_immutable(repository):
@@ -270,6 +323,7 @@ def test_confirmation_and_snapshot_are_audited_and_immutable(repository):
         equipment_name="장비 1",
         business_team="WA",
         actual_headcount=2,
+        night_headcount=2,
         per_person_man_day=Decimal("1.5"),
         reported_daily_man_day=None,
         calculated_daily_man_day=Decimal("3.0"),

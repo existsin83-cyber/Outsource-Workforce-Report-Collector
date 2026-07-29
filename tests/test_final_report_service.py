@@ -1,3 +1,4 @@
+import sqlite3
 from datetime import date
 from decimal import Decimal
 
@@ -7,8 +8,14 @@ from outsource_mail_collector.application.final_report_service import (
     FinalReportService,
     FinalizationError,
 )
+from outsource_mail_collector.application.models import (
+    final_report_snapshot_from_stored,
+)
 from outsource_mail_collector.domain.models import ReviewStatus
-from outsource_mail_collector.domain.work_report import WorkReportIssueCode
+from outsource_mail_collector.domain.work_report import (
+    WorkReportIssueCode,
+    man_day_basis,
+)
 from outsource_mail_collector.infrastructure.db.repository import SQLiteRepository
 
 
@@ -37,6 +44,7 @@ def test_preview_blocks_included_warning_until_individually_confirmed(tmp_path):
         WorkReportIssueCode.DUPLICATE_UNRESOLVED,
         WorkReportIssueCode.CUMULATIVE_BASELINE_REQUIRED,
         WorkReportIssueCode.INVALID_VALUE,
+        WorkReportIssueCode.WORK_ORDER_UNREGISTERED,
     ],
 )
 def test_preview_blocks_structural_issues(tmp_path, issue):
@@ -72,6 +80,93 @@ def test_excluded_rows_do_not_block_finalization(tmp_path):
 
     assert preview.can_confirm is True
     assert preview.rows == ()
+
+
+def test_preview_allows_mixed_headcount_without_uniform_per_person_value(
+    tmp_path,
+):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    _create_ready_row(
+        repository,
+        vendor_name="업체A",
+        actual_headcount=3,
+        night_headcount=1,
+        per_person_man_day=None,
+        confirmed_daily_man_day=Decimal("3.5"),
+        confirmed_cumulative_man_day=Decimal("20.0"),
+    )
+
+    preview = FinalReportService(repository).preview(
+        date(2026, 7, 29), date(2026, 7, 29)
+    )
+
+    assert preview.can_confirm is True
+
+
+def test_preview_blocks_unresolved_night_headcount(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    _create_ready_row(
+        repository,
+        vendor_name="업체A",
+        night_headcount=None,
+        issue_codes=(WorkReportIssueCode.NIGHT_HEADCOUNT_UNRESOLVED,),
+        warning_confirmed=True,
+    )
+
+    preview = FinalReportService(repository).preview(
+        date(2026, 7, 29), date(2026, 7, 29)
+    )
+
+    assert preview.can_confirm is False
+
+
+@pytest.mark.parametrize(
+    ("actual_headcount", "night_headcount"),
+    [
+        (-1, 0),
+        (2, -1),
+        (2, 3),
+    ],
+)
+def test_preview_blocks_invalid_headcount_relationship_without_issue_code(
+    tmp_path,
+    actual_headcount,
+    night_headcount,
+):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    _create_ready_row(
+        repository,
+        vendor_name="업체A",
+        actual_headcount=actual_headcount,
+        night_headcount=night_headcount,
+        per_person_man_day=Decimal("1.5"),
+        issue_codes=(),
+    )
+
+    preview = FinalReportService(repository).preview(
+        date(2026, 7, 29), date(2026, 7, 29)
+    )
+
+    assert preview.can_confirm is False
+    assert any(
+        blocker.code == WorkReportIssueCode.NIGHT_HEADCOUNT_INVALID.value
+        for blocker in preview.blockers
+    )
+
+
+@pytest.mark.parametrize(
+    ("actual_headcount", "night_headcount"),
+    [
+        (-1, 0),
+        (2, -1),
+        (2, 3),
+    ],
+)
+def test_man_day_basis_does_not_label_invalid_counts_as_mixed(
+    actual_headcount,
+    night_headcount,
+):
+    assert man_day_basis(actual_headcount, night_headcount) == "확인 필요"
 
 
 def test_preview_uses_vendor_configuration_order_then_tracking(tmp_path):
@@ -123,14 +218,116 @@ def test_confirmation_snapshots_confirmed_values_and_source_edit_invalidates(
     assert second.rows[0].confirmed_daily_man_day == Decimal("4.0")
 
 
+def test_confirmation_snapshots_mixed_basis_and_night_headcount(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    _create_ready_row(
+        repository,
+        vendor_name="업체A",
+        actual_headcount=3,
+        night_headcount=1,
+        per_person_man_day=None,
+        confirmed_daily_man_day=Decimal("3.5"),
+        confirmed_cumulative_man_day=Decimal("20.0"),
+    )
+
+    snapshot = FinalReportService(repository).confirm(
+        date(2026, 7, 29), date(2026, 7, 29)
+    )
+
+    assert snapshot.rows[0].night_headcount == 1
+    assert snapshot.rows[0].man_day_basis == "혼합"
+
+
+def test_snapshot_hash_distinguishes_mixed_night_headcounts(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    row = _create_ready_row(
+        repository,
+        vendor_name="업체A",
+        actual_headcount=4,
+        night_headcount=1,
+        per_person_man_day=None,
+        confirmed_daily_man_day=Decimal("4.5"),
+    )
+    service = FinalReportService(repository)
+
+    first = service.confirm(date(2026, 7, 29), date(2026, 7, 29))
+    repository.update_work_report_row(
+        row.row_id,
+        {"night_headcount": 2},
+        resolution_note="야근 인원 정정",
+    )
+    second = service.confirm(date(2026, 7, 29), date(2026, 7, 29))
+
+    assert first.rows[0].man_day_basis == "혼합"
+    assert second.rows[0].man_day_basis == "혼합"
+    assert first.snapshot_hash != second.snapshot_hash
+
+
+def test_legacy_snapshot_without_night_keeps_stored_basis(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    with sqlite3.connect(repository.db_path) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO final_reports(
+                date_from, date_to, snapshot_hash, confirmed_at
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                "2026-07-29",
+                "2026-07-29",
+                "legacy-hash",
+                "2026-07-29T09:00:00+00:00",
+            ),
+        )
+        report_id = int(cursor.lastrowid)
+        conn.execute(
+            """
+            INSERT INTO final_report_rows(
+                report_id, source_row_id, work_date, vendor_name,
+                vendor_sort_order, tracking_no, equipment_name, business_team,
+                actual_headcount, night_headcount, per_person_man_day,
+                confirmed_daily_man_day, confirmed_cumulative_man_day
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                report_id,
+                1,
+                "2026-07-29",
+                "업체A",
+                1,
+                "AB260101",
+                "장비 1",
+                "WA",
+                2,
+                None,
+                "1.5",
+                "3.0",
+                "12.0",
+            ),
+        )
+
+    snapshot = final_report_snapshot_from_stored(
+        repository.get_final_report(report_id)
+    )
+
+    assert snapshot.rows[0].night_headcount is None
+    assert snapshot.rows[0].man_day_basis == "1.5"
+
+
 def _create_ready_row(
     repository: SQLiteRepository,
     *,
     vendor_name: str,
     tracking_no: str = "AB260101",
+    actual_headcount: int = 2,
+    night_headcount: int | None = 2,
+    per_person_man_day: Decimal | None = Decimal("1.5"),
     issue_codes: tuple[WorkReportIssueCode, ...] = (),
     warning_confirmed: bool = True,
     confirmed_daily_man_day: Decimal | None = Decimal("3.0"),
+    confirmed_cumulative_man_day: Decimal = Decimal("12.0"),
     included: bool = True,
     review_status: ReviewStatus = ReviewStatus.REVIEWED,
 ):
@@ -141,14 +338,15 @@ def _create_ready_row(
         tracking_no=tracking_no,
         equipment_name="장비 1",
         business_team="WA",
-        actual_headcount=2,
-        per_person_man_day=Decimal("1.5"),
+        actual_headcount=actual_headcount,
+        night_headcount=night_headcount,
+        per_person_man_day=per_person_man_day,
         reported_daily_man_day=confirmed_daily_man_day,
         calculated_daily_man_day=confirmed_daily_man_day,
         confirmed_daily_man_day=confirmed_daily_man_day,
-        reported_cumulative_man_day=Decimal("12.0"),
-        calculated_cumulative_man_day=Decimal("12.0"),
-        confirmed_cumulative_man_day=Decimal("12.0"),
+        reported_cumulative_man_day=confirmed_cumulative_man_day,
+        calculated_cumulative_man_day=confirmed_cumulative_man_day,
+        confirmed_cumulative_man_day=confirmed_cumulative_man_day,
         cumulative_series_key=f"{vendor_name.casefold()}|T:{tracking_no}",
         issue_codes=issue_codes,
         review_status=review_status,

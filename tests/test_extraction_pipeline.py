@@ -9,6 +9,7 @@ from fixtures import (
     FORMAT_A_CATEGORY_DOT,
     FORMAT_B_NUMBERED_VENDOR_PER_UNIT,
     FORMAT_C_INLINE_ALL_IN_ONE_LINE,
+    FORMAT_D_INLINE_REPORTED_DAILY,
 )
 
 
@@ -83,6 +84,26 @@ def test_format_c_inline_headcount_no_manday_at_all():
 
     # 두 번째 섹션은 외주 언급 자체가 없음 -> 레코드 없음
     assert extract_work_records(sections[1]) == []
+
+
+def test_format_d_extracts_tracking_equipment_night_and_reported_daily():
+    sections = _sections_for(FORMAT_D_INLINE_REPORTED_DAILY)
+    assert len(sections) == 2
+
+    first = extract_work_records(sections[0])[0]
+    second = extract_work_records(sections[1])[0]
+
+    assert sections[0].tracking_no == "AA260101"
+    assert sections[0].equipment_name == "고객사H 장비Alpha #1"
+    assert first.actual_headcount == 1.0
+    assert first.night_headcount == 1.0
+    assert first.daily_man_day == 1.5
+
+    assert sections[1].tracking_no == "BB260202"
+    assert sections[1].equipment_name == "고객사I 장비Beta #2"
+    assert second.actual_headcount == 3.0
+    assert second.night_headcount == 1.0
+    assert second.daily_man_day == 3.5
 
 
 @pytest.mark.parametrize(

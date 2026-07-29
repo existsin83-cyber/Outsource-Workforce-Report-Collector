@@ -20,6 +20,7 @@ _HEADERS = (
     "장비명",
     "사업팀",
     "실제 작업인원",
+    "야근 인원",
     "인당 공수",
     "투입 공수",
     "누적 공수",
@@ -94,7 +95,12 @@ def _row_values(row: FinalReportRow) -> tuple[str, ...]:
         row.equipment_name or "",
         row.business_team or "",
         str(int(row.actual_headcount)),
-        f"{row.per_person_man_day:.1f}",
+        (
+            str(row.night_headcount)
+            if row.night_headcount is not None
+            else ""
+        ),
+        row.man_day_basis,
         f"{row.confirmed_daily_man_day:.1f}",
         f"{row.confirmed_cumulative_man_day:.1f}",
     )

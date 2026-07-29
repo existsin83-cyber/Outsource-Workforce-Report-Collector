@@ -28,7 +28,7 @@ class ManualRowDialog(QDialog):
         self.equipment_edit = QLineEdit()
         self.business_team_edit = QLineEdit()
         self.headcount_edit = QLineEdit()
-        self.per_person_edit = QLineEdit()
+        self.night_headcount_edit = QLineEdit()
         self.reported_daily_edit = QLineEdit()
         self.reported_cumulative_edit = QLineEdit()
         self.note_edit = QLineEdit()
@@ -39,7 +39,7 @@ class ManualRowDialog(QDialog):
             ("장비명", self.equipment_edit),
             ("사업팀", self.business_team_edit),
             ("실제 작업인원", self.headcount_edit),
-            ("인당 공수", self.per_person_edit),
+            ("야근 인원", self.night_headcount_edit),
             ("메일 투입 공수", self.reported_daily_edit),
             ("메일 누적 공수", self.reported_cumulative_edit),
             ("추가 사유", self.note_edit),
@@ -64,7 +64,14 @@ class ManualRowDialog(QDialog):
             raise ValueError("거래처명, 사업팀, 추가 사유는 필수입니다.")
         if tracking is None and equipment is None:
             raise ValueError("Tracking No. 또는 장비명을 입력해 주세요.")
-        headcount = _headcount(self.headcount_edit.text())
+        headcount = _headcount(
+            self.headcount_edit.text(), field_name="실제 작업인원"
+        )
+        night_headcount = _headcount(
+            self.night_headcount_edit.text(), field_name="야근 인원"
+        )
+        if night_headcount > headcount:
+            raise ValueError("야근 인원은 실제 작업인원보다 클 수 없습니다.")
         return {
             "work_date": date(
                 selected.year(), selected.month(), selected.day()
@@ -74,9 +81,7 @@ class ManualRowDialog(QDialog):
             "equipment_name": equipment,
             "business_team": business_team,
             "actual_headcount": headcount,
-            "per_person_man_day": _decimal(
-                self.per_person_edit.text(), required=True
-            ),
+            "night_headcount": night_headcount,
             "reported_daily_man_day": _decimal(
                 self.reported_daily_edit.text(), required=False
             ),
@@ -94,11 +99,11 @@ class ManualRowDialog(QDialog):
         self.accept()
 
 
-def _headcount(raw_value: str) -> int:
+def _headcount(raw_value: str, *, field_name: str) -> int:
     value = _decimal(raw_value, required=True)
     assert value is not None
     if value != value.to_integral_value() or value < 0:
-        raise ValueError("실제 작업인원은 0 이상의 정수여야 합니다.")
+        raise ValueError(f"{field_name}은 0 이상의 정수여야 합니다.")
     return int(value)
 
 

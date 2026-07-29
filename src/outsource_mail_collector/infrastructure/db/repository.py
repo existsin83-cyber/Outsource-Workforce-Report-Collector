@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import unicodedata
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import date, datetime, timezone
@@ -13,6 +14,7 @@ from decimal import Decimal
 from importlib import resources
 from pathlib import Path
 from enum import Enum
+from threading import local
 from typing import Any, Iterator
 
 from outsource_mail_collector.domain.models import (
@@ -25,6 +27,7 @@ from outsource_mail_collector.domain.models import (
 from outsource_mail_collector.domain.work_report import (
     RowSource,
     WorkReportIssueCode,
+    man_day_basis,
 )
 
 
@@ -48,6 +51,20 @@ class Vendor:
     aliases: tuple[str, ...]
     active: bool
     sort_order: int
+
+
+@dataclass(frozen=True)
+class WorkOrderMapping:
+    mapping_id: int
+    tracking_no: str
+    normalized_tracking_no: str
+    equipment_name: str
+    vendor_id: int
+    vendor_name: str
+    business_team: str
+    active: bool
+    created_at: str
+    updated_at: str
 
 
 @dataclass(frozen=True)
@@ -107,6 +124,7 @@ class StoredWorkReportRow:
     equipment_name: str | None
     business_team: str | None
     actual_headcount: int | None
+    night_headcount: int | None
     per_person_man_day: Decimal | None
     reported_daily_man_day: Decimal | None
     calculated_daily_man_day: Decimal | None
@@ -136,7 +154,8 @@ class StoredFinalReportRow:
     equipment_name: str | None
     business_team: str | None
     actual_headcount: int
-    per_person_man_day: Decimal
+    night_headcount: int | None
+    man_day_basis: str
     confirmed_daily_man_day: Decimal
     confirmed_cumulative_man_day: Decimal
 
@@ -179,6 +198,12 @@ _MIGRATION_COLUMNS: dict[str, dict[str, str]] = {
         "night_man_day": "REAL",
         "note": "TEXT",
     },
+    "work_report_rows": {
+        "night_headcount": "INTEGER",
+    },
+    "final_report_rows": {
+        "night_headcount": "INTEGER",
+    },
 }
 
 _REVIEW_FIELDS = {
@@ -198,6 +223,7 @@ _WORK_REPORT_UPDATE_FIELDS = {
     "equipment_name",
     "business_team",
     "actual_headcount",
+    "night_headcount",
     "per_person_man_day",
     "reported_daily_man_day",
     "calculated_daily_man_day",
@@ -261,13 +287,39 @@ class SQLiteRepository:
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = Path(db_path)
+        self._transaction_state = local()
         init_db(self.db_path).close()
 
-    @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
+    def _open_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        return conn
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Reuse one thread-local connection for one atomic repository unit."""
+
+        active = getattr(self._transaction_state, "connection", None)
+        if active is not None:
+            yield
+            return
+        conn = self._open_connection()
+        self._transaction_state.connection = conn
+        try:
+            with conn:
+                yield
+        finally:
+            del self._transaction_state.connection
+            conn.close()
+
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        active = getattr(self._transaction_state, "connection", None)
+        if active is not None:
+            yield active
+            return
+        conn = self._open_connection()
         try:
             with conn:
                 yield conn
@@ -441,6 +493,108 @@ class SQLiteRepository:
     def delete_vendor(self, vendor_id: int) -> None:
         with self._connect() as conn:
             conn.execute("DELETE FROM vendors WHERE vendor_id = ?", (vendor_id,))
+
+    def list_work_order_mappings(
+        self, active_only: bool = False
+    ) -> list[WorkOrderMapping]:
+        sql = """
+            SELECT work_order_mappings.*, vendors.canonical_name AS vendor_name
+            FROM work_order_mappings
+            JOIN vendors ON vendors.vendor_id = work_order_mappings.vendor_id
+        """
+        if active_only:
+            sql += " WHERE work_order_mappings.active = 1"
+        sql += " ORDER BY work_order_mappings.mapping_id"
+        with self._connect() as conn:
+            rows = conn.execute(sql).fetchall()
+        return [_work_order_mapping_from_row(row) for row in rows]
+
+    def save_work_order_mapping(
+        self,
+        mapping_id: int | None,
+        tracking_no: str,
+        equipment_name: str,
+        vendor_id: int,
+        business_team: str,
+        active: bool,
+    ) -> WorkOrderMapping:
+        normalized_tracking_no = normalize_tracking_no(tracking_no)
+        normalized_equipment_name = equipment_name.strip()
+        normalized_business_team = business_team.strip()
+        if not normalized_tracking_no:
+            raise ValueError("수주번호는 필수입니다.")
+        if not normalized_equipment_name:
+            raise ValueError("장비명은 필수입니다.")
+        if not normalized_business_team:
+            raise ValueError("사업팀은 필수입니다.")
+        now = _utc_now()
+        try:
+            with self._connect() as conn:
+                if mapping_id is None:
+                    cursor = conn.execute(
+                        """
+                        INSERT INTO work_order_mappings(
+                            tracking_no, normalized_tracking_no, equipment_name,
+                            vendor_id, business_team, active, created_at, updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            tracking_no.strip(),
+                            normalized_tracking_no,
+                            normalized_equipment_name,
+                            vendor_id,
+                            normalized_business_team,
+                            int(active),
+                            now,
+                            now,
+                        ),
+                    )
+                    mapping_id = int(cursor.lastrowid)
+                else:
+                    cursor = conn.execute(
+                        """
+                        UPDATE work_order_mappings
+                        SET tracking_no = ?, normalized_tracking_no = ?,
+                            equipment_name = ?, vendor_id = ?, business_team = ?,
+                            active = ?, updated_at = ?
+                        WHERE mapping_id = ?
+                        """,
+                        (
+                            tracking_no.strip(),
+                            normalized_tracking_no,
+                            normalized_equipment_name,
+                            vendor_id,
+                            normalized_business_team,
+                            int(active),
+                            now,
+                            mapping_id,
+                        ),
+                    )
+                    if cursor.rowcount == 0:
+                        raise KeyError(mapping_id)
+                row = conn.execute(
+                    """
+                    SELECT work_order_mappings.*, vendors.canonical_name AS vendor_name
+                    FROM work_order_mappings
+                    JOIN vendors ON vendors.vendor_id = work_order_mappings.vendor_id
+                    WHERE work_order_mappings.mapping_id = ?
+                    """,
+                    (mapping_id,),
+                ).fetchone()
+        except sqlite3.IntegrityError as exc:
+            if "work_order_mappings.normalized_tracking_no" in str(exc):
+                raise DuplicateEntityError("이미 등록된 활성 수주번호입니다.") from exc
+            raise
+        if row is None:
+            raise KeyError(mapping_id)
+        return _work_order_mapping_from_row(row)
+
+    def delete_work_order_mapping(self, mapping_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM work_order_mappings WHERE mapping_id = ?", (mapping_id,)
+            )
 
     def is_mail_processed(self, mail_entry_id: str) -> bool:
         with self._connect() as conn:
@@ -718,7 +872,7 @@ class SQLiteRepository:
                 source_type, extracted_record_id, mail_entry_id,
                 work_date, work_date_confirmed, vendor_name, tracking_no,
                 equipment_name, business_team, actual_headcount,
-                per_person_man_day, reported_daily_man_day,
+                night_headcount, per_person_man_day, reported_daily_man_day,
                 calculated_daily_man_day, confirmed_daily_man_day,
                 reported_cumulative_man_day, calculated_cumulative_man_day,
                 confirmed_cumulative_man_day, cumulative_series_key,
@@ -727,7 +881,7 @@ class SQLiteRepository:
             )
             VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?
             )
             """,
             (
@@ -741,6 +895,7 @@ class SQLiteRepository:
                 values.get("equipment_name"),
                 values.get("business_team"),
                 values.get("actual_headcount"),
+                values.get("night_headcount"),
                 _decimal_to_db(values.get("per_person_man_day")),
                 _decimal_to_db(values.get("reported_daily_man_day")),
                 _decimal_to_db(values.get("calculated_daily_man_day")),
@@ -782,6 +937,15 @@ class SQLiteRepository:
                 ORDER BY work_date, row_id
                 """,
                 (date_from.isoformat(), date_to.isoformat()),
+            ).fetchall()
+        return [_work_report_from_row(row) for row in rows]
+
+    def list_all_work_report_rows(self) -> list[StoredWorkReportRow]:
+        """Return every persisted compilation row for scoped refresh work."""
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM work_report_rows ORDER BY work_date, row_id"
             ).fetchall()
         return [_work_report_from_row(row) for row in rows]
 
@@ -1078,6 +1242,26 @@ def _vendor_from_row(row: sqlite3.Row) -> Vendor:
     )
 
 
+def _work_order_mapping_from_row(row: sqlite3.Row) -> WorkOrderMapping:
+    return WorkOrderMapping(
+        mapping_id=int(row["mapping_id"]),
+        tracking_no=str(row["tracking_no"]),
+        normalized_tracking_no=str(row["normalized_tracking_no"]),
+        equipment_name=str(row["equipment_name"]),
+        vendor_id=int(row["vendor_id"]),
+        vendor_name=str(row["vendor_name"]),
+        business_team=str(row["business_team"]),
+        active=bool(row["active"]),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+def normalize_tracking_no(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value)
+    return "".join(normalized.split()).upper()
+
+
 def _review_from_row(row: sqlite3.Row) -> StoredReviewRecord:
     return StoredReviewRecord(
         record_id=int(row["record_id"]),
@@ -1129,6 +1313,7 @@ def _work_report_from_row(row: sqlite3.Row) -> StoredWorkReportRow:
         equipment_name=row["equipment_name"],
         business_team=row["business_team"],
         actual_headcount=row["actual_headcount"],
+        night_headcount=row["night_headcount"],
         per_person_man_day=_decimal_from_db(row["per_person_man_day"]),
         reported_daily_man_day=_decimal_from_db(
             row["reported_daily_man_day"]
@@ -1172,21 +1357,22 @@ def _insert_final_report_row(
         row.work_date,
         row.vendor_name,
         row.actual_headcount,
-        row.per_person_man_day,
+        row.night_headcount,
         row.confirmed_daily_man_day,
         row.confirmed_cumulative_man_day,
     )
     if any(value is None for value in required):
         raise ValueError("최종 보고서 행의 필수 확정값이 누락되었습니다.")
+    basis = man_day_basis(row.actual_headcount, row.night_headcount)
     conn.execute(
         """
         INSERT INTO final_report_rows(
             report_id, source_row_id, work_date, vendor_name,
             vendor_sort_order, tracking_no, equipment_name, business_team,
-            actual_headcount, per_person_man_day, confirmed_daily_man_day,
-            confirmed_cumulative_man_day
+            actual_headcount, night_headcount, per_person_man_day,
+            confirmed_daily_man_day, confirmed_cumulative_man_day
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             report_id,
@@ -1198,7 +1384,8 @@ def _insert_final_report_row(
             row.equipment_name,
             row.business_team,
             row.actual_headcount,
-            _decimal_to_db(row.per_person_man_day),
+            row.night_headcount,
+            basis,
             _decimal_to_db(row.confirmed_daily_man_day),
             _decimal_to_db(row.confirmed_cumulative_man_day),
         ),
@@ -1217,7 +1404,12 @@ def _final_report_row_from_db(row: sqlite3.Row) -> StoredFinalReportRow:
         equipment_name=row["equipment_name"],
         business_team=row["business_team"],
         actual_headcount=int(row["actual_headcount"]),
-        per_person_man_day=Decimal(str(row["per_person_man_day"])),
+        night_headcount=(
+            int(row["night_headcount"])
+            if row["night_headcount"] is not None
+            else None
+        ),
+        man_day_basis=str(row["per_person_man_day"]),
         confirmed_daily_man_day=Decimal(
             str(row["confirmed_daily_man_day"])
         ),

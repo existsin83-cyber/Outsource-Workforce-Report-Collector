@@ -23,12 +23,20 @@ class ProblemReviewDialog(QDialog):
         calculated_daily: Decimal | None = None,
         reported_cumulative: Decimal | None = None,
         calculated_cumulative: Decimal | None = None,
+        actual_headcount: int | None = None,
+        night_headcount: int | None = None,
+        headcount_correction: bool = False,
         duplicate_mode: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("문제 행 확인")
         self._duplicate_mode = duplicate_mode
+        self._headcount_correction = (
+            headcount_correction
+            or actual_headcount is not None
+            or night_headcount is not None
+        )
         layout = QFormLayout(self)
         self.reported_daily_label = QLabel(_display(reported_daily))
         self.calculated_daily_label = QLabel(_display(calculated_daily))
@@ -40,6 +48,8 @@ class ProblemReviewDialog(QDialog):
         )
         self.confirmed_daily_edit = QLineEdit()
         self.confirmed_cumulative_edit = QLineEdit()
+        self.actual_headcount_edit = QLineEdit(_display_int(actual_headcount))
+        self.night_headcount_edit = QLineEdit(_display_int(night_headcount))
         self.duplicate_decision = QComboBox()
         self.duplicate_decision.addItem("선택", None)
         self.duplicate_decision.addItem("기존 보고 유지", "KEEP_OLD")
@@ -49,6 +59,9 @@ class ProblemReviewDialog(QDialog):
         if duplicate_mode:
             layout.addRow("중복 처리", self.duplicate_decision)
         else:
+            if self._headcount_correction:
+                layout.addRow("실제 작업인원", self.actual_headcount_edit)
+                layout.addRow("야근 인원", self.night_headcount_edit)
             for label, widget in (
                 ("메일 투입", self.reported_daily_label),
                 ("계산 투입", self.calculated_daily_label),
@@ -79,7 +92,7 @@ class ProblemReviewDialog(QDialog):
                 "duplicate_decision": str(decision),
                 "resolution_note": note,
             }
-        return {
+        values: dict[str, object] = {
             "confirmed_daily_man_day": _required_decimal(
                 self.confirmed_daily_edit.text()
             ),
@@ -88,6 +101,22 @@ class ProblemReviewDialog(QDialog):
             ),
             "resolution_note": note,
         }
+        if self._headcount_correction:
+            actual = _required_headcount(
+                self.actual_headcount_edit.text(),
+                field_name="실제 작업인원",
+            )
+            night = _required_headcount(
+                self.night_headcount_edit.text(),
+                field_name="야근 인원",
+            )
+            if night > actual:
+                raise ValueError(
+                    "야근 인원은 실제 작업인원보다 클 수 없습니다."
+                )
+            values["actual_headcount"] = actual
+            values["night_headcount"] = night
+        return values
 
     def _accept_if_valid(self) -> None:
         try:
@@ -99,6 +128,24 @@ class ProblemReviewDialog(QDialog):
 
 def _display(value: Decimal | None) -> str:
     return "" if value is None else f"{value:.1f}"
+
+
+def _display_int(value: int | None) -> str:
+    return "" if value is None else str(value)
+
+
+def _required_headcount(raw_value: str, *, field_name: str) -> int:
+    try:
+        value = Decimal(raw_value.strip())
+    except InvalidOperation as exc:
+        raise ValueError(f"{field_name}을 숫자로 입력해 주세요.") from exc
+    if (
+        not value.is_finite()
+        or value < 0
+        or value != value.to_integral_value()
+    ):
+        raise ValueError(f"{field_name}은 0 이상의 정수여야 합니다.")
+    return int(value)
 
 
 def _required_decimal(raw_value: str) -> Decimal:

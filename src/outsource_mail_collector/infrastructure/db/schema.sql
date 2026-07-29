@@ -22,6 +22,18 @@ CREATE TABLE IF NOT EXISTS vendors (
     sort_order INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS work_order_mappings (
+    mapping_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tracking_no TEXT NOT NULL,
+    normalized_tracking_no TEXT NOT NULL,
+    equipment_name TEXT NOT NULL,
+    vendor_id INTEGER NOT NULL REFERENCES vendors(vendor_id),
+    business_team TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS processed_mails (
     mail_entry_id TEXT PRIMARY KEY,
     subject TEXT,
@@ -92,6 +104,7 @@ CREATE TABLE IF NOT EXISTS work_report_rows (
     equipment_name TEXT,
     business_team TEXT,
     actual_headcount INTEGER,
+    night_headcount INTEGER,
     per_person_man_day TEXT,
     reported_daily_man_day TEXT,
     calculated_daily_man_day TEXT,
@@ -130,6 +143,7 @@ CREATE TABLE IF NOT EXISTS final_report_rows (
     equipment_name TEXT,
     business_team TEXT,
     actual_headcount INTEGER NOT NULL,
+    night_headcount INTEGER,
     per_person_man_day TEXT NOT NULL,
     confirmed_daily_man_day TEXT NOT NULL,
     confirmed_cumulative_man_day TEXT NOT NULL
@@ -149,3 +163,7 @@ ON work_report_rows(work_date, vendor_name, tracking_no, equipment_name);
 
 CREATE INDEX IF NOT EXISTS idx_final_report_rows_report
 ON final_report_rows(report_id, snapshot_row_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_work_order_tracking
+ON work_order_mappings(normalized_tracking_no)
+WHERE active = 1;

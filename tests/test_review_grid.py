@@ -34,13 +34,14 @@ def test_review_grid_shows_compilation_columns_and_problem_styling():
     assert [
         grid.horizontalHeaderItem(index).text()
         for index in range(grid.columnCount())
-    ][1:16] == [
+    ][1:17] == [
         "작업일",
         "거래처명",
         "Tracking No.",
         "장비명",
         "사업팀",
         "실제 작업인원",
+        "야근 인원",
         "인당 공수",
         "메일 투입",
         "계산 투입",
@@ -51,6 +52,9 @@ def test_review_grid_shows_compilation_columns_and_problem_styling():
         "검증 상태",
         "포함",
     ]
+    assert grid.horizontalHeaderItem(7).text() == "야근 인원"
+    assert grid.horizontalHeaderItem(8).text() == "인당 공수"
+    assert grid.item(0, 8).text() == "혼합"
     assert grid.item(1, 1).background().color().name() == "#fff3e0"
     assert grid.item(2, 1).font().strikeOut()
 
@@ -64,8 +68,8 @@ def test_manual_row_has_no_original_mail_action():
         ]
     )
 
-    mail_actions = grid.cellWidget(0, 16).findChildren(QToolButton)
-    manual_actions = grid.cellWidget(1, 16).findChildren(QToolButton)
+    mail_actions = grid.cellWidget(0, 17).findChildren(QToolButton)
+    manual_actions = grid.cellWidget(1, 17).findChildren(QToolButton)
 
     assert any(button.text() == "원본" for button in mail_actions)
     assert all(button.text() != "원본" for button in manual_actions)
@@ -101,6 +105,7 @@ def _row(
         equipment_name="장비 1",
         business_team="WA",
         actual_headcount=2,
+        night_headcount=1,
         per_person_man_day=Decimal("1.5"),
         reported_daily_man_day=Decimal("3.0"),
         calculated_daily_man_day=Decimal("3.0"),

@@ -30,17 +30,23 @@ class ManDayCalculationService:
         self,
         *,
         actual_headcount: DecimalInput | None,
-        per_person_man_day: DecimalInput | None,
+        night_headcount: DecimalInput | None,
         reported_daily: DecimalInput | None,
     ) -> ManDayValues:
-        headcount = _parse_headcount(actual_headcount)
-        per_person = _parse_man_day(
-            per_person_man_day, field_name="인당 공수", required=True
+        headcount = _parse_headcount(
+            actual_headcount, field_name="실제 작업인원"
         )
+        night = _parse_headcount(
+            night_headcount, field_name="야근 인원"
+        )
+        if night > headcount:
+            raise ValueError("야근 인원은 실제 작업인원보다 클 수 없습니다.")
         reported = _parse_man_day(
             reported_daily, field_name="메일 투입 공수", required=False
         )
-        calculated = quantize_man_day(Decimal(headcount) * per_person)
+        calculated = quantize_man_day(
+            Decimal(headcount) + Decimal(night) * Decimal("0.5")
+        )
 
         if reported is None:
             return ManDayValues(
@@ -116,10 +122,13 @@ class ManDayCalculationService:
         )
 
 
-def _parse_headcount(value: DecimalInput | None) -> int:
-    parsed = _parse_decimal(value, field_name="실제 작업인원", required=True)
+def _parse_headcount(
+    value: DecimalInput | None, *, field_name: str
+) -> int:
+    parsed = _parse_decimal(value, field_name=field_name, required=True)
+    assert parsed is not None
     if parsed < 0 or parsed != parsed.to_integral_value():
-        raise ValueError("실제 작업인원은 0 이상의 정수여야 합니다.")
+        raise ValueError(f"{field_name}은(는) 0 이상의 정수여야 합니다.")
     return int(parsed)
 
 

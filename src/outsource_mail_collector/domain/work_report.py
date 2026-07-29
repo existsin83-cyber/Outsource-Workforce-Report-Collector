@@ -44,6 +44,34 @@ class WorkReportIssueCode(str, Enum):
     DUPLICATE_UNRESOLVED = "DUPLICATE_UNRESOLVED"
     SERIES_KEY_MISSING = "SERIES_KEY_MISSING"
     INVALID_VALUE = "INVALID_VALUE"
+    ACTUAL_HEADCOUNT_INVALID = "ACTUAL_HEADCOUNT_INVALID"
+    REPORTED_DAILY_INVALID = "REPORTED_DAILY_INVALID"
+    REPORTED_CUMULATIVE_INVALID = "REPORTED_CUMULATIVE_INVALID"
+    WORK_ORDER_UNREGISTERED = "WORK_ORDER_UNREGISTERED"
+    EQUIPMENT_MAPPING_MISMATCH = "EQUIPMENT_MAPPING_MISMATCH"
+    NIGHT_HEADCOUNT_UNRESOLVED = "NIGHT_HEADCOUNT_UNRESOLVED"
+    NIGHT_HEADCOUNT_INVALID = "NIGHT_HEADCOUNT_INVALID"
+
+
+def man_day_basis(
+    actual_headcount: int | None,
+    night_headcount: int | None,
+) -> str:
+    """Return the per-person basis label derived from headcount evidence."""
+
+    if actual_headcount is None or night_headcount is None:
+        return "확인 필요"
+    if (
+        actual_headcount < 0
+        or night_headcount < 0
+        or night_headcount > actual_headcount
+    ):
+        return "확인 필요"
+    if night_headcount == 0:
+        return "1.0"
+    if night_headcount == actual_headcount:
+        return "1.5"
+    return "혼합"
 
 
 @dataclass(frozen=True)

@@ -29,6 +29,9 @@ from outsource_mail_collector.application.settings_service import SettingsServic
 from outsource_mail_collector.application.work_report_service import (
     WorkReportService,
 )
+from outsource_mail_collector.application.work_order_mapping_service import (
+    WorkOrderMappingService,
+)
 from outsource_mail_collector.infrastructure.db.repository import (
     SQLiteRepository,
     default_db_path,
@@ -43,6 +46,7 @@ def build_services(db_path: Path | None = None) -> ApplicationServices:
     repository = SQLiteRepository(db_path or default_db_path())
     outlook = OutlookComAdapter()
     calculation = ManDayCalculationService()
+    work_order_mapping = WorkOrderMappingService(repository)
     return ApplicationServices(
         mail_collection_service=MailCollectionService(repository, outlook),
         extraction_orchestrator=ExtractionOrchestrator(repository),
@@ -50,7 +54,9 @@ def build_services(db_path: Path | None = None) -> ApplicationServices:
         excel_export_service=ExcelExportService(repository, excel_adapter=None),
         settings_service=SettingsService(repository, outlook),
         man_day_calculation_service=calculation,
-        work_report_service=WorkReportService(repository, calculation),
+        work_report_service=WorkReportService(
+            repository, calculation, work_order_mapping
+        ),
         final_report_service=FinalReportService(repository),
         report_renderer=HtmlReportRenderer(),
     )

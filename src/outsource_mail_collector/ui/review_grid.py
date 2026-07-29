@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from outsource_mail_collector.application.models import WorkReportRow
 from outsource_mail_collector.domain.models import ReviewStatus
+from outsource_mail_collector.domain.work_report import man_day_basis
 
 
 _COLUMNS = (
@@ -28,6 +29,7 @@ _COLUMNS = (
     "장비명",
     "사업팀",
     "실제 작업인원",
+    "야근 인원",
     "인당 공수",
     "메일 투입",
     "계산 투입",
@@ -39,6 +41,8 @@ _COLUMNS = (
     "포함",
     "작업",
 )
+_INCLUDED_COLUMN = _COLUMNS.index("포함")
+_ACTIONS_COLUMN = _COLUMNS.index("작업")
 _PROBLEM_BACKGROUND = QColor("#fff3e0")
 
 
@@ -100,7 +104,8 @@ class ReviewGridWidget(QTableWidget):
             row.equipment_name or "",
             row.business_team or "",
             "" if row.actual_headcount is None else str(row.actual_headcount),
-            _display_decimal(row.per_person_man_day),
+            "" if row.night_headcount is None else str(row.night_headcount),
+            man_day_basis(row.actual_headcount, row.night_headcount),
             _display_decimal(row.reported_daily_man_day),
             _display_decimal(row.calculated_daily_man_day),
             _display_decimal(row.confirmed_daily_man_day),
@@ -128,8 +133,10 @@ class ReviewGridWidget(QTableWidget):
             font = QFont(included.font())
             font.setStrikeOut(True)
             included.setFont(font)
-        self.setItem(row_index, 15, included)
-        self.setCellWidget(row_index, 16, self._row_actions(row))
+        self.setItem(row_index, _INCLUDED_COLUMN, included)
+        self.setCellWidget(
+            row_index, _ACTIONS_COLUMN, self._row_actions(row)
+        )
 
     def _row_actions(self, row: WorkReportRow) -> QWidget:
         container = QWidget()

@@ -56,6 +56,764 @@
 
 ## 세션 기록
 
+## 2026-07-29 21:55:31 KST — 최종 코드 리뷰 중요 발견사항 수정
+
+### 세션 정보
+
+- 작성 주체: Codex 세션
+- 세션 ID: 확인 불가
+- 작업 디렉터리: `D:\My_Work\Outsource Workforce Report Collector`
+- Git 브랜치: `master`
+- 기준 커밋: `efa7305` (`feat: add work report compilation workflow`)
+
+### 1. 세션 목표
+
+- 최종 코드 리뷰의 Important 발견사항 네 건을 단일 수정 파동으로 해결한다.
+- 회귀 테스트를 먼저 실패시키고 최소 구현 후 집중·전체·정적 검증을 수행한다.
+- 실제 Outlook, Excel 및 live collector DB에는 접근하지 않는다.
+
+### 2. 시작 시점 상태
+
+- 기준 커밋은 `efa7305`, 브랜치는 `master`였다.
+- Tasks 1~8의 기존 수정 및 미추적 산출물이 있는 dirty worktree였으며 이를
+  이번 작업 결과로 간주하거나 되돌리지 않았다.
+- 이전 전체 자동 검증 기준은 148개 테스트 통과였다.
+
+### 3. 핵심 결정
+
+- `WORK_ORDER_UNREGISTERED`와 필드별 잘못된 숫자 provenance를 최종 확정
+  차단 문제로 처리한다.
+- 매핑 새로고침 대상은 메일 기원, 경고 미확정 행 중 매핑 문제 또는 빈
+  업체/팀 값이 있는 행으로 한정한다.
+- 빈 값과 이전 매핑에서 온 것으로 확인되는 값만 채우거나 교체하고, 사용자가
+  별도로 입력한 비어 있지 않은 값은 보존한다.
+- 설정 저장은 UI가 연결 객체를 직접 다루지 않도록 repository/application
+  트랜잭션 경계를 사용하며, 하나의 SQLite 연결에서 전부 commit 또는 rollback한다.
+- 일반 `INVALID_VALUE`를 유지하면서 원본 필드를 식별하는 별도 issue code를
+  추가해 관련 없는 재계산으로 근거가 사라지지 않게 한다.
+
+### 4. 수행 내용
+
+- 최종 보고서의 미등록 작업번호 차단 집합을 보강했다.
+- 기존 미확정 메일 행의 작업번호 매핑 새로고침과 설정 저장 후 호출을 구현했다.
+- 작업번호 또는 장비명 수정 시 매핑 문제를 재평가하도록 했다.
+- 기존 매핑 값, 사용자 값, 빈 값을 구분해 업체/팀 값을 안전하게 갱신했다.
+- repository의 thread-local 단일 연결 트랜잭션과 application 경계를 추가했다.
+- 설정 전체 사전 검증, 동일 트랜잭션 저장, commit 후 UI 상태 반영을 구현했다.
+- 실제/보고 일일/보고 누적 잘못된 숫자 provenance를 필드별로 보존하고 원본
+  필드의 명시적 수정 때만 제거하도록 했다.
+- 자기검토에서 invalid provenance와 missing 문제가 동시에 생성되는 중복 경고를
+  발견해 실패 테스트 후 억제 규칙을 추가했다.
+
+### 5. 변경 파일
+
+기능 코드:
+
+- `src/outsource_mail_collector/domain/work_report.py`
+- `src/outsource_mail_collector/application/final_report_service.py`
+- `src/outsource_mail_collector/application/settings_service.py`
+- `src/outsource_mail_collector/application/work_report_service.py`
+- `src/outsource_mail_collector/infrastructure/db/repository.py`
+- `src/outsource_mail_collector/ui/main_window.py`
+- `src/outsource_mail_collector/ui/settings_dialog.py`
+
+테스트:
+
+- `tests/test_final_report_service.py`
+- `tests/test_work_order_mapping_service.py`
+- `tests/test_work_report_service.py`
+- `tests/test_settings_dialog.py`
+- `tests/test_main_window.py`
+
+기록:
+
+- `.superpowers/sdd/2026-07-29-work-order-master-mixed-man-day/final-fix-report.md`
+- `HANDOFF.md`
+
+### 6. 검증 결과
+
+- TDD RED:
+  - 미등록 작업번호 최종 차단: `1 failed, 3 passed`
+  - 매핑 새로고침·provenance 선택 테스트: `7 failed, 2 passed, 19 deselected`
+  - 설정 원자성: `2 failed, 1 passed, 10 deselected`
+  - 설정 수락 후 새로고침: `1 failed`
+  - 자기검토 중복 missing 경고: `1 failed, 1 passed`
+- TDD GREEN:
+  - 선택 회귀: `17 passed, 29 deselected`
+  - 영향 파일 전체: `67 passed`
+  - 자기검토 보강: `2 passed, 22 deselected`
+- 최종 집중 테스트:
+  - 지정한 13개 테스트 파일
+  - `QT_QPA_PLATFORM=offscreen`
+  - 저장소 내부 `--basetemp`
+  - `-p no:cacheprovider`
+  - 결과: `127 passed in 60.15s`
+- 최종 전체 테스트:
+  - `QT_QPA_PLATFORM=offscreen`
+  - 저장소 내부 `--basetemp`
+  - `-p no:cacheprovider`
+  - 결과: `162 passed in 75.05s`
+- `python -m compileall -q src tests`: exit code 0
+- `git diff --check`: exit code 0, LF-to-CRLF 안내 경고만 출력
+- `HANDOFF.md` 및 `docs/**/*.md` strict UTF-8 읽기:
+  `STRICT_UTF8=ok`
+
+### 7. 실패 및 미확인 사항
+
+- 최종 자동 검증 실패: 없음.
+- 실제 Outlook 수집/Inspector: 실행하지 않음.
+- 실제 Excel 내보내기 및 서식 보존: 실행하지 않음.
+- 대화형 GUI 육안 검증: 실행하지 않음.
+- live collector DB 변경 검증: 실행하지 않음.
+
+### 8. 현재 상태
+
+- 상태: 완료.
+- 요청된 네 건의 Important 발견사항과 저비용 보강 회귀가 구현·검증됐다.
+- 실환경 경계는 코드 실패가 아니라 이번 작업에서 의도적으로 실행하지 않은 검증이다.
+
+### 9. 다음 세션 실행 순서
+
+1. `.superpowers/sdd/2026-07-29-work-order-master-mixed-man-day/final-fix-report.md`
+   의 결정과 검증 결과를 확인한다.
+2. 필요 시 복사 DB와 테스트 Outlook/Excel 파일에서만 수동 GUI 흐름을 검증한다.
+3. 커밋이 필요하면 기존 dirty worktree와 이번 수정 범위를 다시 구분한 뒤 사용자의
+   명시적 지시에 따라 진행한다.
+
+### 10. 위험 및 주의사항
+
+- repository 트랜잭션은 현재 동기식 설정 저장 경로와 같은 스레드에서 사용해야 하며
+  SQLite 연결을 다른 스레드로 전달하지 않는다.
+- 실제 Outlook·Excel·GUI 동작은 자동 테스트 결과로 확대 해석하지 않는다.
+- 기존 worktree의 다른 변경과 산출물을 임의로 정리하거나 되돌리지 않는다.
+
+### 11. Git 및 변경 경계
+
+- 커밋: 하지 않음.
+- 푸시: 하지 않음.
+- 브랜치 변경/PR: 하지 않음.
+- 기존 사용자 및 이전 Task 변경은 보존함.
+
+### 12. 이전 기록 정정
+
+- 없음.
+
+## 2026-07-29 20:28:40 KST — Task 8 전체 회귀·문서·실환경 재확인
+
+### 세션 정보
+
+- 작성 주체: Codex 세션
+- 세션 ID: 확인 불가
+- 작업 디렉터리: `D:\My_Work\Outsource Workforce Report Collector`
+- Git 브랜치: `master`
+- 기준 커밋: `efa7305` (`feat: add work report compilation workflow`)
+
+### 1. 세션 목표
+
+- Tasks 1~7의 전체 회귀와 정적 검사를 수행하고 governing 문서를 동기화한다.
+- live DB를 변경하지 않는 새 테스트 DB에서 승인된 2026-07-27 Outlook 읽기
+  전용 재확인을 수행한다.
+
+제외 범위:
+
+- 실제 Excel 접근·쓰기
+- Outlook Display/Inspector, 이동, 삭제, 회신, 전달, 발송 또는 읽음 상태 변경
+- 기능 코드 변경
+
+### 2. 시작 시점 상태
+
+- `master`, 기준 커밋 `efa7305` 위에 Tasks 1~7 기능·테스트와 기존 사용자 문서가
+  미커밋 상태로 존재했다.
+- governing 문서에는 상세 공수표 설계가 있었으나 exact 수주 매핑과 혼합 야근
+  공수의 최종 결정을 명시적으로 동기화해야 했다.
+
+### 3. 핵심 결정
+
+- 정규화 수주번호 exact mapping만 업체·사업팀을 공급하며 장비명 불일치는
+  매핑을 바꾸지 않고 경고로 남긴다.
+- `투입 공수`는 당일 보고 공수이고, 계산 당일 공수는
+  `실제 작업인원 + 야근 인원 × 0.5`다.
+- 인당 공수 표시는 `1.0`, `1.5`, `혼합`이며 최종 표에 `야근 인원`을 포함한다.
+- 수주 미등록과 유효하지 않은 야근 인원은 최종화를 차단한다.
+- 최초 Outlook 권한 상승 거절 후 안전 경계를 우회하지 않고 controller에 동일
+  runner의 명시 권한 실행을 인계한다.
+
+### 4. 수행 내용
+
+- PRD, TRD, 시스템 아키텍처, ADR에 승인 결정을 반영했다.
+- focused/full/offscreen 회귀, compileall, diff, strict UTF-8 검사를 실행했다.
+- live DB를 SQLite URI `mode=ro`로 열어 새 ignored 테스트 DB에 backup API로
+  복제했다.
+- fresh DB에만 additive migration과 승인된 테스트 전용 업체 1건, 활성 수주
+  매핑 2건을 등록했다. 실제 업무 값은 이 문서에 기록하지 않는다.
+- 2026-07-27 count-only Outlook runner를 실행했으나 unread baseline 단계에서
+  COM 오류가 발생했다. 사용자 세션 실행을 위한 권한 상승도 거절돼 재시도하지
+  않았다.
+- 동일한 안전 runner를 Task 8 SDD 작업공간에 보존했다.
+- controller가 사용자 승인 맥락으로 동일 runner를 1회 명시 권한 실행해 두 행의
+  필드·매핑·공수와 unread 비변경을 count-only로 확인했다.
+
+### 5. 변경 파일
+
+- `docs/PRD.md`
+- `docs/TRD.md`
+- `docs/SYSTEM_ARCHITECTURE.md`
+- `docs/ADR.md`
+- `.superpowers/sdd/2026-07-29-work-order-master-mixed-man-day/task-8-outlook-readonly-check.py`
+- `.superpowers/sdd/2026-07-29-work-order-master-mixed-man-day/task-8-report.md`
+- `HANDOFF.md`
+- `local-test/collector-work-order-realcheck-20260729.db`
+  - Git ignored fresh 테스트 DB
+
+기능 코드 변경: 없음
+
+### 6. 검증 결과
+
+- focused:
+
+  ```powershell
+  $env:QT_QPA_PLATFORM='offscreen'
+  .\.venv\Scripts\python.exe -m pytest tests/test_extraction_pipeline.py tests/test_repository.py tests/test_work_order_mapping_service.py tests/test_man_day_calculation_service.py tests/test_work_report_service.py tests/test_settings_dialog.py tests/test_review_grid.py tests/test_manual_row_dialog.py tests/test_problem_review_dialog.py tests/test_final_report_service.py tests/test_report_renderer.py tests/test_final_report_dialog.py tests/test_main_window.py -q --basetemp .pytest-basetemp-task8-focused-20260729 -p no:cacheprovider
+  ```
+
+  결과: `113 passed in 47.88s`
+
+- full:
+
+  ```powershell
+  $env:QT_QPA_PLATFORM='offscreen'
+  .\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest-basetemp-task8-full-20260729 -p no:cacheprovider
+  ```
+
+  결과: `148 passed in 65.32s`
+
+- static 및 문서:
+
+  ```powershell
+  .\.venv\Scripts\python.exe -m compileall -q src tests
+  git diff --check
+  .\.venv\Scripts\python.exe -c "from pathlib import Path; [p.read_text(encoding='utf-8', errors='strict') for p in [Path('HANDOFF.md'), *Path('docs').rglob('*.md')]]; print('STRICT_UTF8=ok')"
+  ```
+
+  결과: compileall exit 0, `git diff --check` exit 0(LF→CRLF 정보 경고만),
+  `STRICT_UTF8=ok`
+
+- 상세 명령과 결과: `.superpowers/sdd/2026-07-29-work-order-master-mixed-man-day/task-8-report.md`
+- fresh DB:
+  - 생성 전 목적지 미존재
+  - SQLite backup source `mode=ro`
+  - `git check-ignore`: `.gitignore:15:*.db`
+  - 초기 및 Outlook 실패 후 `PRAGMA integrity_check = ok`
+  - 활성 업체 1건, 전체/활성 수주 매핑 각 2건
+  - controller 실행 후 2026-07-27 추출 행 2건, `integrity_check = ok`
+- controller Outlook read-only:
+  - 조회 범위 MailItem 31건, 등록 담당자 1명
+  - 수집 메일 1건, 수집 오류 0건
+  - 추출 2행, 추출 오류 0건
+  - 동기화 2행
+  - tracking, equipment, vendor, team, actual, night, reported daily,
+    calculated daily이 채워진 행 각각 2건
+  - reported/calculated daily 일치 2건
+  - 행 issue code: `CUMULATIVE_BASELINE_REQUIRED`
+  - unread 비교 31건, mutation 0건
+  - `INVALID_VALUE`, `SERIES_KEY_MISSING`, `WORK_ORDER_UNREGISTERED` 없음
+  - Display/Inspector·이동·삭제·회신·전달·발송·Excel 접근 없음
+- 실제 Excel: 미실행
+- visual GUI: 미실행; offscreen UI 자동 테스트만 통과
+
+### 7. 실패 및 미확인 사항
+
+- Outlook sandbox 실행:
+  - `BLOCKER_PHASE=UNREAD_BEFORE`
+  - `BLOCKER_TYPE=com_error`
+  - `BLOCKER_HRESULT=-2147352567`
+- 오류는 collection·extraction·synchronization 전에 발생했고 unread baseline도
+  완성되지 않았다.
+- unsandboxed retry 요청은 권한 검토에서 실메일/DB 위험을 이유로 거절됐다.
+- controller의 후속 명시 권한 실행은 동일 안전 runner로 성공했으므로 위 최초
+  실패는 더 이상 Task 8 blocker가 아니다.
+- `CUMULATIVE_BASELINE_REQUIRED`는 최초 누적 기준에 대한 정상 사용자 검토
+  이슈로 남는다.
+
+### 8. 현재 상태
+
+- governing 문서 동기화: 완료
+- focused/full/static/UTF-8: 완료
+- fresh ignored DB와 테스트 전용 매핑: 완료
+- Outlook 읽기 전용 실환경 재확인: 완료
+- Task 8 전체: `DONE_WITH_CONCERNS`
+
+### 9. 다음 세션 실행 순서
+
+1. 사용자는 두 행의 최초 누적 기준을 검토·확정한다.
+2. 필요하면 별도 사용자 승인 아래 visual GUI와 Outlook 붙여넣기 모양을
+   확인한다.
+3. 실제 Excel 기능은 현재 범위 밖이므로 별도 설계·승인 전까지 접근하지 않는다.
+
+완료 판단 기준:
+
+- Task 8 completion gate는 자동 검증, fresh DB, 두 행 필드·매핑·공수 일치와
+  unread mutation 0을 모두 확인해 충족했다.
+
+### 10. 위험 및 주의사항
+
+- live DB는 절대 쓰지 말고 fresh DB만 사용한다.
+- Outlook runner는 명시 날짜 read-only 속성 조회만 허용한다. Display/Inspector,
+  이동, 삭제, 회신, 전달, 발송 또는 읽음 상태 변경으로 범위를 넓히지 않는다.
+- 실제 tracking/equipment/vendor/business-team 값과 메일 본문을 로그·문서에
+  출력하지 않는다.
+- 실제 Excel과 visual GUI 검증은 여전히 미실행이다.
+
+### 11. Git 및 변경 경계
+
+- Tasks 1~7과 기존 사용자 변경을 보존했다.
+- 커밋: 수행하지 않음
+- 푸시: 수행하지 않음
+- 브랜치 변경: 수행하지 않음
+- PR: 수행하지 않음
+
+### 12. 이전 기록 정정
+
+- 없음
+
+## 2026-07-29 15:34:00 KST — 수주 마스터·혼합 공수 구현 계획
+
+### 세션 정보
+
+- 작성 주체: Codex 세션
+- 세션 ID: 확인 불가
+- 작업 디렉터리: `D:\My_Work\Outsource Workforce Report Collector`
+- Git 브랜치: `master`
+- 기준 커밋: `efa7305` (`feat: add work report compilation workflow`)
+
+### 1. 세션 목표
+
+- 사용자 승인 설계를 실행 가능한 TDD 구현 계획으로 구체화한다.
+
+### 2. 시작 시점 상태
+
+- 수주 마스터와 혼합 야근 공수 설계 문서가 작성·사용자 승인된 상태였다.
+- 코드 구현과 신규 자동 테스트는 시작하지 않은 상태였다.
+
+### 3. 핵심 결정
+
+- 파서, 수주 마스터 영속성, 매핑 서비스, 공수 계산, 설정 UI, 검토 UI, 최종 출력, 전체 검증의 8개 작업으로 나눈다.
+- 각 작업은 실패 테스트 확인 후 최소 구현과 관련 테스트 통과로 끝낸다.
+- 기존 `final_report_rows.per_person_man_day TEXT NOT NULL` 호환성을 위해 최종 스냅샷에는 `1.0`, `1.5`, `혼합` 표시 문자열을 저장하고 야근 인원을 별도 열로 보존한다.
+- 저장소 규칙에 따라 계획의 자동 커밋 단계는 수행하지 않는다.
+
+### 4. 수행 내용
+
+- 관련 domain, application, infrastructure, UI, 테스트 파일과 기존 인터페이스를 매핑했다.
+- 파일별 변경, 정확한 서비스·저장소 signature, 실패 테스트, 구현 핵심 코드, 실행 명령과 기대 결과를 포함한 계획을 작성했다.
+- 설계 명세 coverage, 작업 수, 체크박스 수, placeholder, 타입 이름과 diff 형식을 자체 검토했다.
+
+### 5. 변경 파일
+
+- `docs/superpowers/plans/2026-07-29-work-order-master-mixed-man-day.md`
+  - 8개 작업, 60개 실행 체크포인트의 TDD 구현 계획을 추가했다.
+- `HANDOFF.md`
+  - 설계 승인과 구현 계획 완료 상태를 기록했다.
+
+### 6. 검증 결과
+
+- 계획 strict UTF-8 읽기: 성공
+- 명세 coverage 검사: 성공
+- Task 수 8개, 체크박스 60개 확인
+- `TBD`, `TODO`, 구현 생략 placeholder 검사: 발견 없음
+- `git diff --check -- <계획 문서>`: 성공
+- 애플리케이션 테스트: 미실행
+- 실제 Outlook·Excel·GUI 검증: 미실행
+
+### 7. 실패 및 미확인 사항
+
+- 최초 coverage 검사 명령은 PowerShell 인용 오류로 실패했으나 인용에 민감한 문자열을 제거해 재실행했고 성공했다.
+- 구현 실행 방식 선택과 코드 구현이 남아 있다.
+
+### 8. 현재 상태
+
+- 설계 승인: 완료
+- 구현 계획: 완료
+- 코드 구현·자동 검증: 미완료
+- 실환경 재검증: 미완료
+
+### 9. 다음 세션 실행 순서
+
+1. 사용자가 subagent-driven 또는 inline 실행 방식을 선택한다.
+2. 선택한 실행 skill로 계획 Task 1부터 TDD 순서대로 구현한다.
+3. focused/full/static 검증 후 새 테스트 DB로 2026-07-27 Outlook 읽기 전용 재검증을 수행한다.
+
+완료 판단 기준:
+
+- 계획의 completion gate와 승인된 실환경 검증 조건을 모두 충족해야 한다.
+
+### 10. 위험 및 주의사항
+
+- 실제 메일·회사 데이터를 fixture나 로그에 넣지 않는다.
+- 기존 최종 스냅샷의 NOT NULL 호환성을 깨지 않는다.
+- Outlook은 읽기 전용이며 실제 Excel 쓰기는 별도 사용자 승인 전까지 수행하지 않는다.
+
+### 11. Git 및 변경 경계
+
+- 이번 세션 변경: 신규 구현 계획, `HANDOFF.md`
+- 기존 이번 기능 변경: 신규 설계 문서
+- 기존 사용자 변경: `.claude/`, `.superpowers/`, `AGENTS.md`, `CLAUDE.md`
+- 커밋: 수행하지 않음
+- 푸시: 수행하지 않음
+- 자동 커밋·푸시 금지: 유지
+
+### 12. 이전 기록 정정
+
+- 없음
+
+## 2026-07-29 15:15:57 KST — 수주 마스터·혼합 야근 공수 설계
+
+### 세션 정보
+
+- 작성 주체: Codex 세션
+- 세션 ID: 확인 불가
+- 작업 디렉터리: `D:\My_Work\Outsource Workforce Report Collector`
+- Git 브랜치: `master`
+- 기준 커밋: `efa7305` (`feat: add work report compilation workflow`)
+
+### 1. 세션 목표
+
+- 실환경 메일에서 확인한 업체·사업팀 미기재와 일부 야근 공수 형식을 반영하는 후속 설계를 확정한다.
+
+### 2. 시작 시점 상태
+
+- 2026-07-27 메일에서 수주번호·장비명·인원·야근 인원은 추출되었으나 `투입 공수`는 추출되지 않았다.
+- 업체·사업팀 매핑이 없어 생성된 두 공수표 행이 구조적 오류로 차단된 상태였다.
+
+### 3. 핵심 결정
+
+- 별도 수주 마스터에 수주번호·장비명·업체·사업팀·활성 상태를 저장한다.
+- 수주번호 정확 일치를 업체·사업팀 자동 입력의 기준으로 사용하고 장비명은 교차 검증한다.
+- 장비당 한 행을 유지하며 실제 작업인원과 야근 인원을 분리한다.
+- 계산 당일 공수는 `실제 작업인원 + 야근 인원 × 0.5`를 사용한다.
+- 전원 주간은 인당 공수 `1.0`, 전원 야근은 `1.5`, 일부 야근은 `혼합`으로 표시한다.
+
+### 4. 수행 내용
+
+- 실제 테스트 DB에서 수주번호 2건과 해당 장비명이 정확히 추출된 사실을 확인했다.
+- 추출 레코드에는 실제 인원과 야근 인원이 저장되지만 application DTO와 취합 행에서 야근 인원이 누락되는 경계를 확인했다.
+- 현재 파서가 `총 공수`만 처리하고 `투입 공수` 라벨을 처리하지 않는 직접 원인을 확인했다.
+- 승인된 설계를 신규 설계 문서로 작성하고 미정 표현·필수 목차·UTF-8·diff 형식을 검사했다.
+
+### 5. 변경 파일
+
+- `docs/superpowers/specs/2026-07-29-work-order-master-mixed-man-day-design.md`
+  - 수주 마스터, 혼합 야근 계산, 데이터 모델, UI, 오류 코드, migration 및 테스트 설계를 기록했다.
+- `HANDOFF.md`
+  - 이번 설계 결정과 다음 단계의 사용자 검토 게이트를 기록했다.
+
+### 6. 검증 결과
+
+- 설계 문서 엄격한 UTF-8 읽기 및 필수 구조 검사: 성공
+- `TBD`, `TODO`, `미정`, placeholder 검사: 발견 없음
+- `git diff --check -- <설계 문서>`: 성공
+- 애플리케이션 테스트: 미실행
+- 실제 Outlook·Excel·GUI 검증: 미실행
+
+### 7. 실패 및 미확인 사항
+
+- 설계 문서에 대한 사용자 최종 검토가 남아 있다.
+- 구현 계획과 코드 변경은 아직 시작하지 않았다.
+
+### 8. 현재 상태
+
+- 설계 대화 및 문서화: 완료
+- 사용자 문서 검토: 대기
+- 구현 계획·구현·자동 검증: 미완료
+- 실환경 재검증: 미완료
+
+### 9. 다음 세션 실행 순서
+
+1. 사용자가 신규 설계 문서를 검토·승인한다.
+2. `writing-plans` 절차로 세부 구현 계획을 작성한다.
+3. 실패 테스트부터 수주 마스터, 파서, 공수 계산, UI·출력 순으로 구현한다.
+4. 자동 검증 후 새 테스트 DB 복제본으로 2026-07-27 Outlook 읽기 전용 재검증을 수행한다.
+
+완료 판단 기준:
+
+- 설계 승인 후 구현·자동 검증과 승인된 실환경 재검증을 모두 완료해야 한다.
+
+### 10. 위험 및 주의사항
+
+- 혼합 야근을 단일 숫자 인당 공수로 평균내지 않는다.
+- 수주번호 미등록·야근 인원 오류·보고 공수 불일치를 임의 보정하지 않는다.
+- 실제 메일 본문·개인정보·회사 기밀을 fixture, 로그, 문서에 기록하지 않는다.
+- Outlook은 읽기 전용이며 실제 Excel 쓰기는 별도 사용자 승인 전까지 수행하지 않는다.
+
+### 11. Git 및 변경 경계
+
+- 이번 세션 변경: 신규 설계 문서, `HANDOFF.md`
+- 기존 사용자 변경: `.claude/`, `.superpowers/`, `AGENTS.md`, `CLAUDE.md`
+- 커밋: 수행하지 않음
+- 푸시: 수행하지 않음
+- 자동 커밋·푸시 금지: 유지
+
+### 12. 이전 기록 정정
+
+- 없음
+
+## 2026-07-29 13:41:29 KST — 7월 27일 Outlook 수집·파싱 실환경 확인
+
+### 세션 정보
+
+- 작성 주체: Codex 세션
+- 세션 ID: 확인 불가
+- 작업 디렉터리: `D:\My_Work\Outsource Workforce Report Collector`
+- Git 브랜치: `master`
+- 기준 커밋: `efa7305` (`feat: add work report compilation workflow`)
+
+### 1. 세션 목표
+
+- 사용자가 지정한 2026-07-27 받은 편지함에서 등록 담당자 메일의 수집·파싱·공수표 동기화 경로를 확인한다.
+
+### 2. 시작 시점 상태
+
+- 테스트 DB와 등록 담당자 1명, Outlook `받은 편지함` 설정이 준비되어 있었다.
+- 2026-07-28에는 등록 담당자의 발신 메일이 없음을 확인한 상태였다.
+
+### 3. 핵심 결정
+
+- 테스트 DB에만 결과를 기록하고 실제 메일 내용·주소·EntryID는 출력하거나 문서화하지 않는다.
+- 조회 전후 읽음 상태를 비교해 Outlook 비변경 경계를 검증한다.
+
+### 4. 수행 내용
+
+- 2026-07-27 00:00 이상, 2026-07-28 00:00 미만 범위를 읽기 전용으로 조회했다.
+- 등록 담당자 메일 1건을 수집·본문 조회하고 추출 레코드 및 공수표 행 각 2건을 생성했다.
+- 두 행의 날짜는 모두 2026-07-27로 해석되었고 날짜 관련 경고는 없었다.
+- 두 행 모두 업체·사업팀·인원·인당 공수가 비어 구조적 차단 상태임을 확인했다.
+
+### 5. 변경 파일
+
+- `HANDOFF.md`
+  - 7월 27일 실환경 수집·파싱 결과를 기록했다.
+- `local-test\collector-test-20260729.db`
+  - 수집·추출·공수표 결과가 기록된 Git 제외 테스트 DB다.
+
+### 6. 검증 결과
+
+- 등록 담당자 메일: 1건 수집, 본문 조회 1건
+- 추출 레코드 및 공수표 행: 각 2건
+- 수집·추출 오류 및 날짜 경고: 0건
+- 행 이슈: `SERIES_KEY_MISSING` 2건, `INVALID_VALUE` 2건
+- 최종 확정 차단: `REQUIRED_FIELD_MISSING`, `CONFIRMED_MAN_DAY_MISSING` 포함 각 2건
+- 조회 범위 메일 31건의 읽음 상태 비교: 변경 0건
+- 실제 Excel·메일 작성·GUI 검토: 미실행
+
+### 7. 실패 및 미확인 사항
+
+- 실제 메일 형식에서 업체·사업팀·인원·인당 공수가 추출되지 않은 원인은 아직 조사하지 않았다.
+- Computer Use 플러그인 도구 부재로 GUI 자동 검토는 수행하지 못했다.
+
+### 8. 현재 상태
+
+- Outlook 읽기 전용 수집: 완료
+- 실제 메일 날짜 해석: 완료
+- 상세 공수표 파싱: 부분 완료
+- 최종 표 확정: 차단됨
+
+### 9. 다음 세션 실행 순서
+
+1. 실제 메일에서 보존된 최소 근거 구간과 익명화 가능한 구조를 확인한다.
+2. 재현 가능한 익명화 fixture와 실패 테스트를 먼저 작성한다.
+3. 파서 수정 후 관련 회귀 테스트와 테스트 DB 재수집을 수행한다.
+4. GUI에서 문제 행 검토와 최종 표 미리보기를 확인한다.
+
+완료 판단 기준:
+
+- 업체·사업팀·인원·인당 공수가 올바르게 추출되고 두 행의 구조적 차단이 해결되어야 한다.
+
+### 10. 위험 및 주의사항
+
+- 실제 메일 본문·회사명·개인정보를 소스, fixture, 로그, HANDOFF에 기록하지 않는다.
+- Outlook 메일 삭제·이동·읽음 상태 변경·회신·전달을 하지 않는다.
+- 실제 Excel 쓰기는 별도 사용자 승인 전까지 수행하지 않는다.
+
+### 11. Git 및 변경 경계
+
+- 이번 세션 변경: `HANDOFF.md`, Git 제외 테스트 DB
+- 기존 사용자 변경: `.claude/`, `.superpowers/`, `AGENTS.md`, `CLAUDE.md`
+- 커밋: 수행하지 않음
+- 푸시: 수행하지 않음
+- 자동 커밋·푸시 금지: 유지
+
+### 12. 이전 기록 정정
+
+- 없음
+
+## 2026-07-29 13:32:07 KST — 7월 28일 Outlook 읽기 전용 실환경 확인
+
+### 세션 정보
+
+- 작성 주체: Codex 세션
+- 세션 ID: 확인 불가
+- 작업 디렉터리: `D:\My_Work\Outsource Workforce Report Collector`
+- Git 브랜치: `master`
+- 기준 커밋: `efa7305` (`feat: add work report compilation workflow`)
+
+### 1. 세션 목표
+
+- 테스트 DB를 사용해 2026-07-28 받은 편지함 수집 경로를 읽기 전용으로 확인한다.
+
+### 2. 시작 시점 상태
+
+- 테스트 DB `local-test\collector-test-20260729.db`가 준비되어 있었다.
+- Outlook 조회 날짜는 사용자가 2026-07-28로 지정했다.
+
+### 3. 핵심 결정
+
+- 메일 제목·본문·주소 등 실제 데이터는 출력하지 않고 건수와 오류·경고 코드만 확인한다.
+- Outlook 읽음 상태를 조회 전후 비교해 비변경 여부를 검증한다.
+
+### 4. 수행 내용
+
+- 테스트 DB 설정의 `받은 편지함`에서 2026-07-28 00:00 이상,
+  2026-07-29 00:00 미만 범위를 조회했다.
+- 해당 날짜의 메일 항목 26건을 확인했고 등록 담당자 1명의 SMTP 주소와 일치하는 메일은 0건이었다.
+- 저장 주소의 꺾쇠 제거 및 표준 주소 파싱 방식으로도 일치 건수는 0건임을 확인했다.
+- 일치 메일이 없어 본문 열기·추출·공수표 행 생성은 발생하지 않았다.
+
+### 5. 변경 파일
+
+- `HANDOFF.md`
+  - Outlook 읽기 전용 실환경 확인 결과와 차단 조건을 기록했다.
+- `local-test\collector-test-20260729.db`
+  - 테스트 실행 경로로만 사용했으며 Git에서 제외된다.
+
+### 6. 검증 결과
+
+- 조회 범위 내 Outlook 메일 항목: 26건
+- 등록 담당자 일치 메일/본문 조회/추출 레코드/공수표 행: 모두 0건
+- 수집 오류 및 추출 오류: 0건
+- 조회 전후 읽음 상태 비교: 26건 확인, 변경 0건
+- 실제 Excel·메일 작성·GUI 조작 검증: 미실행
+
+### 7. 실패 및 미확인 사항
+
+- 등록 담당자 주소가 해당 날짜의 실제 SMTP 발신자와 일치하지 않아 파싱 이후 흐름을 검증하지 못했다.
+- 사용자가 지정한 7월 28일이 메일 수신일인지 작업일인지 추가 확인이 필요하다.
+- Computer Use 플러그인에 필요한 `node_repl` 도구가 노출되지 않아 GUI 자동화는 수행하지 못했다.
+
+### 8. 현재 상태
+
+- Outlook 날짜 필터 및 읽기 전용 접근: 완료
+- 등록 담당자 기반 수집: 정상적인 0건 결과
+- 파싱·상세 공수표·GUI 검증: 차단됨
+
+### 9. 다음 세션 실행 순서
+
+1. 7월 28일의 의미가 메일 수신일인지 작업일인지 확인한다.
+2. 테스트 DB의 등록 담당자 주소가 실제 보고 발신자와 맞는지 사용자가 설정 화면에서 확인한다.
+3. 올바른 수신일·등록 주소로 다시 수집하고 파싱·상세 공수표 흐름을 검증한다.
+
+완료 판단 기준:
+
+- 등록 담당자와 일치하는 메일을 테스트 DB로 수집해 파싱 및 공수표 행까지 확인해야 한다.
+
+### 10. 위험 및 주의사항
+
+- 실제 주소·제목·본문·EntryID는 로그나 문서에 기록하지 않는다.
+- Outlook 메일 삭제·이동·읽음 상태 변경·회신·전달을 하지 않는다.
+- 실제 Excel 쓰기는 별도 사용자 승인 전까지 수행하지 않는다.
+
+### 11. Git 및 변경 경계
+
+- 이번 세션 변경: `HANDOFF.md`, Git 제외 테스트 DB
+- 기존 사용자 변경: `.claude/`, `.superpowers/`, `AGENTS.md`, `CLAUDE.md`
+- 커밋: 수행하지 않음
+- 푸시: 수행하지 않음
+- 자동 커밋·푸시 금지: 유지
+
+### 12. 이전 기록 정정
+
+- 없음
+
+## 2026-07-29 13:18:59 KST — 테스트용 SQLite DB 복제
+
+### 세션 정보
+
+- 작성 주체: Codex 세션
+- 세션 ID: 확인 불가
+- 작업 디렉터리: `D:\My_Work\Outsource Workforce Report Collector`
+- Git 브랜치: `master`
+- 기준 커밋: `efa7305` (`feat: add work report compilation workflow`)
+
+### 1. 세션 목표
+
+- 앱의 기본 SQLite DB 존재 여부를 확인하고 실환경 검증에 사용할 안전한 테스트 복제본을 준비한다.
+
+### 2. 시작 시점 상태
+
+- 기본 DB 경로와 복제본 유무가 사용자에게 확인되지 않은 상태였다.
+- 추적 파일 변경은 없었고 `.claude/`, `.superpowers/`, `AGENTS.md`, `CLAUDE.md`는 기존 미추적 상태였다.
+
+### 3. 핵심 결정
+
+- 원본 DB를 직접 시험에 사용하지 않고 SQLite backup API로 일관된 테스트 복제본을 만든다.
+- 실제 데이터 내용은 열람하거나 출력하지 않고 파일 메타데이터와 무결성만 확인한다.
+
+### 4. 수행 내용
+
+- 기본 DB `C:\Users\sjyang\AppData\Local\OutsourceMailCollector\collector.db`의 존재를 확인했다.
+- `local-test\collector-test-20260729.db`에 SQLite 백업 복제본을 생성했다.
+- 원본 DB에는 쓰기 작업을 수행하지 않았다.
+
+### 5. 변경 파일
+
+- `HANDOFF.md`
+  - DB 확인·복제 및 검증 경계를 기록했다.
+- `local-test\collector-test-20260729.db`
+  - 테스트용 런타임 복제본이며 `*.db` 규칙으로 Git에서 제외된다.
+
+### 6. 검증 결과
+
+- `PRAGMA integrity_check`: `ok`
+- `git check-ignore -v local-test/collector-test-20260729.db`: `.gitignore`의 `*.db` 규칙 적용 확인
+- 실제 Outlook·Excel·GUI 검증: 미실행
+
+### 7. 실패 및 미확인 사항
+
+- 테스트 복제본을 사용하는 GUI 실행 및 Outlook 읽기 전용 수집은 아직 실행하지 않았다.
+- 테스트에 사용할 Outlook 조회 날짜 범위는 아직 확정되지 않았다.
+
+### 8. 현재 상태
+
+- 테스트 DB 준비: 완료
+- 실제 Outlook·GUI 검증: 실환경 검증 필요
+
+### 9. 다음 세션 실행 순서
+
+1. 테스트 복제본을 주입하여 앱을 실행한다.
+2. 사용자가 승인한 날짜 범위에서 Outlook을 읽기 전용으로 조회한다.
+3. 수집·검토·상세 공수표 미리보기를 확인하며 원본 DB와 실제 Excel에는 쓰지 않는다.
+
+완료 판단 기준:
+
+- 테스트 DB를 사용한 GUI·Outlook 읽기 전용 검증 결과가 명확히 기록되어야 한다.
+
+### 10. 위험 및 주의사항
+
+- 복제본에도 로컬 처리 이력과 설정이 포함될 수 있으므로 커밋·외부 전송하지 않는다.
+- Outlook 메일 삭제·이동·읽음 상태 변경·회신·전달을 하지 않는다.
+- 실제 Excel 파일 쓰기는 별도 사용자 승인 전까지 수행하지 않는다.
+
+### 11. Git 및 변경 경계
+
+- 이번 세션 변경: `HANDOFF.md`, Git 제외 테스트 DB
+- 기존 사용자 변경: `.claude/`, `.superpowers/`, `AGENTS.md`, `CLAUDE.md`
+- 커밋: 수행하지 않음
+- 푸시: 수행하지 않음
+- 자동 커밋·푸시 금지: 유지
+
+### 12. 이전 기록 정정
+
+- 없음
+
 ## 2026-07-29 12:43:07 KST — 상세 외주 공수표 구현 세션 최종 인계
 
 ### 세션 정보

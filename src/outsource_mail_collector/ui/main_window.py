@@ -283,13 +283,22 @@ class MainWindow(QMainWindow):
                 )
                 self._reload_rows()
             return
-        dialog = ProblemReviewDialog(
-            reported_daily=row.reported_daily_man_day,
-            calculated_daily=row.calculated_daily_man_day,
-            reported_cumulative=row.reported_cumulative_man_day,
-            calculated_cumulative=row.calculated_cumulative_man_day,
-            parent=self,
-        )
+        dialog_arguments: dict[str, object] = {
+            "reported_daily": row.reported_daily_man_day,
+            "calculated_daily": row.calculated_daily_man_day,
+            "reported_cumulative": row.reported_cumulative_man_day,
+            "calculated_cumulative": row.calculated_cumulative_man_day,
+            "parent": self,
+        }
+        night_issue_codes = {
+            WorkReportIssueCode.NIGHT_HEADCOUNT_UNRESOLVED,
+            WorkReportIssueCode.NIGHT_HEADCOUNT_INVALID,
+        }
+        if set(row.issue_codes) & night_issue_codes:
+            dialog_arguments["actual_headcount"] = row.actual_headcount
+            dialog_arguments["night_headcount"] = row.night_headcount
+            dialog_arguments["headcount_correction"] = True
+        dialog = ProblemReviewDialog(**dialog_arguments)
         if row.confirmed_daily_man_day is not None:
             dialog.confirmed_daily_edit.setText(
                 str(row.confirmed_daily_man_day)
@@ -300,8 +309,31 @@ class MainWindow(QMainWindow):
             )
         if dialog.exec() == dialog.DialogCode.Accepted:
             try:
+                values = dialog.values()
+                resolution_note = str(values["resolution_note"])
+                headcount_changes = {
+                    field_name: values[field_name]
+                    for field_name in (
+                        "actual_headcount",
+                        "night_headcount",
+                    )
+                    if field_name in values
+                }
+                if headcount_changes:
+                    self._services.work_report_service.update_row(
+                        row_id,
+                        headcount_changes,
+                        resolution_note=resolution_note,
+                    )
                 self._services.work_report_service.confirm_row(
-                    row_id, **dialog.values()
+                    row_id,
+                    confirmed_daily_man_day=values[
+                        "confirmed_daily_man_day"
+                    ],
+                    confirmed_cumulative_man_day=values[
+                        "confirmed_cumulative_man_day"
+                    ],
+                    resolution_note=resolution_note,
                 )
             except ValueError as exc:
                 QMessageBox.warning(self, "행 확정 실패", str(exc))
@@ -368,6 +400,7 @@ class MainWindow(QMainWindow):
                 "outlook_folder", "Inbox"
             )
             self.folder_combo.setCurrentText(folder or "Inbox")
+            self._services.work_report_service.refresh_work_order_mappings()
             self._reload_rows()
 
     def _show_excel_notice(self) -> None:

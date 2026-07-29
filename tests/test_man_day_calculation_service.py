@@ -19,7 +19,7 @@ def test_missing_reported_daily_uses_calculation_and_warns(
 ) -> None:
     result = service.calculate_daily(
         actual_headcount=2,
-        per_person_man_day=Decimal("1.5"),
+        night_headcount=2,
         reported_daily=None,
     )
 
@@ -33,7 +33,7 @@ def test_reported_daily_mismatch_requires_confirmation(
 ) -> None:
     result = service.calculate_daily(
         actual_headcount=2,
-        per_person_man_day=Decimal("1.5"),
+        night_headcount=2,
         reported_daily=Decimal("4.0"),
     )
 
@@ -43,16 +43,29 @@ def test_reported_daily_mismatch_requires_confirmation(
     assert WorkReportIssueCode.DAILY_MISMATCH in result.issues
 
 
-def test_matching_reported_daily_is_confirmed_candidate(
+@pytest.mark.parametrize(
+    ("actual", "night", "reported", "calculated"),
+    [
+        (2, 0, Decimal("2.0"), Decimal("2.0")),
+        (2, 2, Decimal("3.0"), Decimal("3.0")),
+        (3, 1, Decimal("3.5"), Decimal("3.5")),
+    ],
+)
+def test_daily_uses_actual_and_night_headcount(
     service: ManDayCalculationService,
+    actual: int,
+    night: int,
+    reported: Decimal,
+    calculated: Decimal,
 ) -> None:
     result = service.calculate_daily(
-        actual_headcount=3,
-        per_person_man_day=Decimal("0.5"),
-        reported_daily=Decimal("1.5"),
+        actual_headcount=actual,
+        night_headcount=night,
+        reported_daily=reported,
     )
 
-    assert result.confirmed_candidate == Decimal("1.5")
+    assert result.calculated == calculated
+    assert result.confirmed_candidate == calculated
     assert result.issues == ()
 
 
@@ -63,24 +76,36 @@ def test_invalid_headcount_is_rejected(
     with pytest.raises(ValueError):
         service.calculate_daily(
             actual_headcount=headcount,
-            per_person_man_day=Decimal("1.0"),
+            night_headcount=0,
             reported_daily=None,
         )
 
 
 @pytest.mark.parametrize(
-    ("headcount", "per_person"),
-    [(None, Decimal("1.0")), (2, None)],
+    ("headcount", "night"),
+    [(None, 0), (2, None)],
 )
 def test_missing_daily_inputs_are_rejected(
     service: ManDayCalculationService,
     headcount: object,
-    per_person: object,
+    night: object,
 ) -> None:
     with pytest.raises(ValueError):
         service.calculate_daily(
             actual_headcount=headcount,
-            per_person_man_day=per_person,
+            night_headcount=night,
+            reported_daily=None,
+        )
+
+
+@pytest.mark.parametrize(("actual", "night"), [(2, -1), (2, 3), (2, 0.5)])
+def test_invalid_night_headcount_is_rejected(
+    service: ManDayCalculationService, actual: int, night: object
+) -> None:
+    with pytest.raises(ValueError):
+        service.calculate_daily(
+            actual_headcount=actual,
+            night_headcount=night,
             reported_daily=None,
         )
 
@@ -89,14 +114,14 @@ def test_missing_daily_inputs_are_rejected(
     "value",
     [Decimal("-0.1"), Decimal("NaN"), Decimal("Infinity")],
 )
-def test_invalid_man_day_values_are_rejected(
+def test_invalid_reported_man_day_values_are_rejected(
     service: ManDayCalculationService, value: Decimal
 ) -> None:
     with pytest.raises(ValueError):
         service.calculate_daily(
             actual_headcount=1,
-            per_person_man_day=value,
-            reported_daily=None,
+            night_headcount=0,
+            reported_daily=value,
         )
 
 

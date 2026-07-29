@@ -99,6 +99,18 @@ FORMAT_C_INLINE_ALL_IN_ONE_LINE = """\
 감사합니다.
 """
 
+FORMAT_D_INLINE_REPORTED_DAILY = """\
+2026년 7월 27일 업무보고입니다.
+
+1. 고객사H 장비Alpha #1
+.수주번호 : AA260101
+.외주 인원 : 1 명 (야근: 1 명 투입 공수 : 1.5)
+
+2. 고객사I 장비Beta #2
+.수주번호 : BB260202
+.외주 인원 : 3 명 (야근: 1 명 투입 공수 : 3.5)
+"""
+
 DATE_SUBJECT_UNDERSCORE = "26_07_29 (수) 일일 업무보고"
 DATE_SUBJECT_DOTTED = "2026. 07. 29. 외주 작업보고"
 DATE_SUBJECT_KOREAN = "7월 29일 일일 업무보고"

@@ -581,5 +581,21 @@ SQLite 파일: `app_data.db`
 
 클립보드는 Qt `QMimeData`에 `text/html`과 `text/plain`을 함께 기록한다. Outlook
 및 Excel COM은 이 출력 경로에 사용하지 않는다.
+
+### 15.4 수주 마스터와 혼합 야근 공수
+
+- `WorkOrderMappingService`는 정규화 수주번호의 활성 exact mapping만 조회해
+  업체와 사업팀을 공급한다. 장비명은 교차 검증 근거이며, 불일치하면
+  `EQUIPMENT_MAPPING_MISMATCH`를 남기되 exact mapping 결과를 대체하지 않는다.
+- 파서는 `투입 공수`를 당일 보고 공수인 `daily_man_day`로 추출한다.
+  `WorkReportService`는 이를 `reported_daily_man_day`로 보존하고 계산값으로
+  덮어쓰지 않는다.
+- 계산 당일 공수는 `실제 작업인원 + 야근 인원 × 0.5`다. 실제 작업인원과
+  야근 인원은 0 이상의 정수여야 하고 야근 인원은 실제 작업인원을 초과할 수
+  없다.
+- 인당 공수 표시는 야근 인원에 따라 `1.0`, `1.5`, `혼합`으로 파생한다.
+  최종 스냅샷과 HTML·일반 텍스트 표는 `야근 인원` 열을 보존한다.
+- `WORK_ORDER_UNREGISTERED`와 `NIGHT_HEADCOUNT_INVALID`는 최종화를 차단한다.
+  장비명 불일치 경고는 명시적 검토 후 확정할 수 있다.
 - 메일 표가 HTML table인지 붙여넣기 이미지인지
 - 프로그램 배포 시 관리자 권한 필요 여부

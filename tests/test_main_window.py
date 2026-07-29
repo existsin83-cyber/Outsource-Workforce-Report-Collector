@@ -16,7 +16,10 @@ from outsource_mail_collector.application.models import (
     WorkReportRow,
 )
 from outsource_mail_collector.domain.models import ReviewStatus
-from outsource_mail_collector.domain.work_report import RowSource
+from outsource_mail_collector.domain.work_report import (
+    RowSource,
+    WorkReportIssueCode,
+)
 from outsource_mail_collector.ui.main_window import MainWindow
 
 
@@ -83,7 +86,7 @@ def test_manual_row_button_calls_work_report_service(monkeypatch):
                 "equipment_name": "장비 1",
                 "business_team": "WA",
                 "actual_headcount": 2,
-                "per_person_man_day": Decimal("1.5"),
+                "night_headcount": 2,
                 "reported_daily_man_day": None,
                 "reported_cumulative_man_day": Decimal("12.0"),
                 "resolution_note": "주말 작업",
@@ -96,6 +99,76 @@ def test_manual_row_button_calls_work_report_service(monkeypatch):
     window.manual_button.click()
 
     assert len(services.work_report_service.manual_calls) == 1
+    assert services.work_report_service.manual_calls[0]["night_headcount"] == 2
+    assert (
+        "per_person_man_day"
+        not in services.work_report_service.manual_calls[0]
+    )
+
+
+def test_night_issue_review_updates_headcounts_before_confirmation(
+    monkeypatch,
+):
+    _app()
+    services = _services()
+    services.work_report_service.rows = [
+        _row(
+            1,
+            night_headcount=None,
+            issue_codes=(WorkReportIssueCode.NIGHT_HEADCOUNT_UNRESOLVED,),
+        )
+    ]
+    window = MainWindow(services)
+    dialog_arguments: list[dict] = []
+
+    class FakeProblemDialog:
+        DialogCode = QDialog.DialogCode
+
+        def __init__(self, **kwargs):
+            dialog_arguments.append(kwargs)
+            self.confirmed_daily_edit = SimpleNamespace(
+                setText=lambda text: None
+            )
+            self.confirmed_cumulative_edit = SimpleNamespace(
+                setText=lambda text: None
+            )
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def values(self):
+            return {
+                "actual_headcount": 3,
+                "night_headcount": 1,
+                "confirmed_daily_man_day": Decimal("3.5"),
+                "confirmed_cumulative_man_day": Decimal("10.0"),
+                "resolution_note": "혼합 야근 인원 확인",
+            }
+
+    monkeypatch.setattr(
+        main_window_module, "ProblemReviewDialog", FakeProblemDialog
+    )
+
+    window._review_problem_row(1)
+
+    assert dialog_arguments[0]["actual_headcount"] == 2
+    assert dialog_arguments[0]["night_headcount"] is None
+    assert dialog_arguments[0]["headcount_correction"] is True
+    assert services.work_report_service.update_calls == [
+        (
+            1,
+            {"actual_headcount": 3, "night_headcount": 1},
+            "혼합 야근 인원 확인",
+        )
+    ]
+    assert services.work_report_service.confirm_calls == [
+        (
+            1,
+            Decimal("3.5"),
+            Decimal("10.0"),
+            "혼합 야근 인원 확인",
+        )
+    ]
 
 
 def test_preview_button_invokes_final_report_service(monkeypatch):
@@ -125,6 +198,29 @@ def test_preview_button_invokes_final_report_service(monkeypatch):
     assert len(services.final_report_service.preview_calls) == 1
 
 
+def test_accepting_settings_refreshes_work_order_mappings(monkeypatch):
+    _app()
+    services = _services()
+    window = MainWindow(services)
+
+    class FakeSettingsDialog:
+        DialogCode = QDialog.DialogCode
+
+        def __init__(self, settings_service, parent=None):
+            self.settings_service = settings_service
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(
+        main_window_module, "SettingsDialog", FakeSettingsDialog
+    )
+
+    window._open_settings()
+
+    assert services.work_report_service.mapping_refresh_calls == 1
+
+
 def test_excel_button_shows_preparation_notice(monkeypatch):
     _app()
     window = MainWindow(_services())
@@ -146,6 +242,9 @@ class _WorkReportService:
     def __init__(self) -> None:
         self.rows = [_row(1)]
         self.manual_calls: list[dict] = []
+        self.update_calls: list[tuple[int, dict, str]] = []
+        self.confirm_calls: list[tuple[int, Decimal, Decimal, str]] = []
+        self.mapping_refresh_calls = 0
 
     def list_rows(self, date_from, date_to):
         return WorkReportRangeResult(tuple(self.rows), 0, 0)
@@ -155,6 +254,32 @@ class _WorkReportService:
         return self.rows[0]
 
     def set_included(self, *args, **kwargs):
+        return self.rows[0]
+
+    def refresh_work_order_mappings(self):
+        self.mapping_refresh_calls += 1
+        return self.rows
+
+    def update_row(self, row_id, changes, *, resolution_note):
+        self.update_calls.append((row_id, changes, resolution_note))
+        return self.rows[0]
+
+    def confirm_row(
+        self,
+        row_id,
+        *,
+        confirmed_daily_man_day,
+        confirmed_cumulative_man_day,
+        resolution_note,
+    ):
+        self.confirm_calls.append(
+            (
+                row_id,
+                confirmed_daily_man_day,
+                confirmed_cumulative_man_day,
+                resolution_note,
+            )
+        )
         return self.rows[0]
 
 
@@ -188,7 +313,12 @@ def _services():
     )
 
 
-def _row(row_id: int) -> WorkReportRow:
+def _row(
+    row_id: int,
+    *,
+    night_headcount: int | None = 2,
+    issue_codes: tuple[WorkReportIssueCode, ...] = (),
+) -> WorkReportRow:
     return WorkReportRow(
         row_id=row_id,
         source_type=RowSource.MAIL,
@@ -201,6 +331,7 @@ def _row(row_id: int) -> WorkReportRow:
         equipment_name="장비 1",
         business_team="WA",
         actual_headcount=2,
+        night_headcount=night_headcount,
         per_person_man_day=Decimal("1.5"),
         reported_daily_man_day=Decimal("3.0"),
         calculated_daily_man_day=Decimal("3.0"),
@@ -209,7 +340,7 @@ def _row(row_id: int) -> WorkReportRow:
         calculated_cumulative_man_day=Decimal("12.0"),
         confirmed_cumulative_man_day=Decimal("12.0"),
         cumulative_series_key="업체a|T:AB260101",
-        issue_codes=(),
+        issue_codes=issue_codes,
         review_status=ReviewStatus.NORMAL,
         included=True,
         warning_confirmed=True,
