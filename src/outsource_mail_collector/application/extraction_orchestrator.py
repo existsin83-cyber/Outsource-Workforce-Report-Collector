@@ -20,6 +20,7 @@ from outsource_mail_collector.parsing.mail_normalizer import normalize
 from outsource_mail_collector.parsing.outsource_extractor import extract_work_records
 from outsource_mail_collector.parsing.section_parser import split_sections
 from outsource_mail_collector.parsing.validation_engine import validate
+from outsource_mail_collector.parsing.work_date_parser import resolve_work_date
 
 
 class ExtractionOrchestrator:
@@ -67,6 +68,7 @@ class ExtractionOrchestrator:
     def _process_one(
         self, mail: MailRecord, vendor_aliases: dict[str, str]
     ) -> list[StoredReviewRecord]:
+        mail = _resolve_mail_work_date(mail)
         normalized = normalize(mail.body_text, mail.body_html)
         sections = split_sections(mail.mail_id, normalized.lines)
         rows = []
@@ -95,3 +97,22 @@ def _canonical_vendor(
         return None
     stripped = vendor_name.strip()
     return aliases.get(stripped.casefold(), stripped)
+
+
+def _resolve_mail_work_date(mail: MailRecord) -> MailRecord:
+    resolution = resolve_work_date(
+        mail.subject, mail.body_text, mail.received_at
+    )
+    return mail.model_copy(
+        update={
+            "report_date": resolution.candidate_date,
+            "subject_report_date": resolution.subject_date,
+            "body_report_date": resolution.body_date,
+            "report_date_source": resolution.source,
+            "date_issue_codes": resolution.issue_codes,
+            "work_date_confirmed": (
+                resolution.source.value == "SUBJECT"
+                and not resolution.requires_review
+            ),
+        }
+    )

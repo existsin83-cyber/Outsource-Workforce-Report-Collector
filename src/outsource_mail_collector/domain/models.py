@@ -7,6 +7,8 @@ from enum import Enum
 
 from pydantic import BaseModel
 
+from outsource_mail_collector.domain.work_report import WorkDateSource
+
 
 class ReviewStatus(str, Enum):
     """docs/PRD.md 에 정의된 검토 상태 어휘."""
@@ -42,11 +44,16 @@ class MailRecord(BaseModel):
     sender_name: str
     sender_email: str
     received_at: datetime
-    report_date: date
+    report_date: date | None
     body_text: str
     body_html: str
     source_folder: str
     processed_status: str = "미처리"
+    subject_report_date: date | None = None
+    body_report_date: date | None = None
+    report_date_source: WorkDateSource = WorkDateSource.UNRESOLVED
+    date_issue_codes: tuple[str, ...] = ()
+    work_date_confirmed: bool = False
 
 
 class EquipmentSection(BaseModel):

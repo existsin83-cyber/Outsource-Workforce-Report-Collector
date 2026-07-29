@@ -98,3 +98,9 @@ FORMAT_C_INLINE_ALL_IN_ONE_LINE = """\
 이상입니다.
 감사합니다.
 """
+
+DATE_SUBJECT_UNDERSCORE = "26_07_29 (수) 일일 업무보고"
+DATE_SUBJECT_DOTTED = "2026. 07. 29. 외주 작업보고"
+DATE_SUBJECT_KOREAN = "7월 29일 일일 업무보고"
+DATE_BODY_MATCHING = "2026년 7월 29일 업무보고 드립니다."
+DATE_BODY_CONFLICTING = "2026년 7월 28일 업무보고 드립니다."

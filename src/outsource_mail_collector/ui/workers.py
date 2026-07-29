@@ -14,6 +14,7 @@ from outsource_mail_collector.application.mail_collection_service import (
 from outsource_mail_collector.application.models import CollectionWorkflowResult
 from outsource_mail_collector.application.review_service import ReviewService
 from outsource_mail_collector.application.settings_service import SettingsService
+from outsource_mail_collector.application.work_report_service import WorkReportService
 
 
 class FolderLoadWorker(QThread):
@@ -42,18 +43,22 @@ class CollectionWorker(QThread):
 
     def __init__(
         self,
-        report_date,
+        received_date,
+        work_date_from,
+        work_date_to,
         folder_path: str,
         mail_service: MailCollectionService,
         orchestrator: ExtractionOrchestrator,
-        review_service: ReviewService,
+        work_report_service: WorkReportService,
     ) -> None:
         super().__init__()
-        self._report_date = report_date
+        self._received_date = received_date
+        self._work_date_from = work_date_from
+        self._work_date_to = work_date_to
         self._folder_path = folder_path
         self._mail_service = mail_service
         self._orchestrator = orchestrator
-        self._review_service = review_service
+        self._work_report_service = work_report_service
 
     def run(self) -> None:
         import pythoncom
@@ -61,12 +66,22 @@ class CollectionWorker(QThread):
         pythoncom.CoInitialize()
         try:
             collection = self._mail_service.collect(
-                self._report_date, self._folder_path
+                self._received_date, self._folder_path
             )
             extraction = self._orchestrator.process(collection.mails)
-            records = tuple(self._review_service.list_records(self._report_date))
+            self._work_report_service.synchronize_extracted_records(
+                extraction.records
+            )
+            range_result = self._work_report_service.list_rows(
+                self._work_date_from, self._work_date_to
+            )
             self.completed.emit(
-                CollectionWorkflowResult(collection, extraction, records)
+                CollectionWorkflowResult(
+                    collection,
+                    extraction,
+                    extraction.records,
+                    range_result.rows,
+                )
             )
         except (OSError, RuntimeError, ValueError, pywintypes.com_error) as exc:
             self.failed.emit(str(exc))

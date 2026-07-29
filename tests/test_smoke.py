@@ -42,6 +42,14 @@ def test_init_db_creates_tables(tmp_path: Path):
 def test_build_services_uses_requested_database(tmp_path: Path):
     db_path = tmp_path / "collector.db"
 
-    build_services(db_path)
+    services = build_services(db_path)
 
     assert db_path.exists()
+    assert services.man_day_calculation_service is not None
+    assert services.work_report_service is not None
+    assert services.final_report_service is not None
+    assert services.report_renderer is not None
+    assert (
+        services.work_report_service._repository
+        is services.final_report_service._repository
+    )

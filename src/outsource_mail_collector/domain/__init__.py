@@ -17,3 +17,20 @@ __all__ = [
     "ReviewStatus",
     "ValidationResult",
 ]
+"""Domain models and pure work-report value types."""
+
+from outsource_mail_collector.domain.work_report import (
+    IssueSeverity,
+    ManDayValues,
+    RowSource,
+    WorkDateSource,
+    WorkReportIssueCode,
+)
+
+__all__ = [
+    "IssueSeverity",
+    "ManDayValues",
+    "RowSource",
+    "WorkDateSource",
+    "WorkReportIssueCode",
+]

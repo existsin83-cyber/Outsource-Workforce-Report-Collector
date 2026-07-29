@@ -1,4 +1,4 @@
-"""Main review window connected to application services."""
+"""Main window for collecting, reviewing, and copying work-report tables."""
 
 from __future__ import annotations
 
@@ -19,13 +19,18 @@ from PySide6.QtWidgets import (
 )
 
 from outsource_mail_collector.application.container import ApplicationServices
-from outsource_mail_collector.application.errors import InvalidReviewValueError
 from outsource_mail_collector.application.models import (
     CollectionWorkflowResult,
-    ReviewRecord,
+    WorkReportRow,
 )
-from outsource_mail_collector.domain.models import ReviewStatus
-from outsource_mail_collector.ui.review_grid import ReviewGridWidget, ReviewRow
+from outsource_mail_collector.domain.work_report import WorkReportIssueCode
+from outsource_mail_collector.ui.clipboard import ClipboardWriter
+from outsource_mail_collector.ui.final_report_dialog import FinalReportDialog
+from outsource_mail_collector.ui.manual_row_dialog import ManualRowDialog
+from outsource_mail_collector.ui.problem_review_dialog import (
+    ProblemReviewDialog,
+)
+from outsource_mail_collector.ui.review_grid import ReviewGridWidget
 from outsource_mail_collector.ui.settings_dialog import SettingsDialog
 from outsource_mail_collector.ui.workers import CollectionWorker
 
@@ -34,44 +39,45 @@ class MainWindow(QMainWindow):
     def __init__(self, services: ApplicationServices) -> None:
         super().__init__()
         self._services = services
+        self._clipboard_writer = ClipboardWriter()
         self._collection_worker: CollectionWorker | None = None
+        self._rows: tuple[WorkReportRow, ...] = ()
         self._last_missing_names: tuple[str, ...] = ()
         self._last_target_count = 0
         self._last_received_count = 0
 
         self.setWindowTitle("Outsource Mail Collector")
-        self.resize(1280, 720)
-
+        self.resize(1500, 820)
         central = QWidget()
         layout = QVBoxLayout(central)
         layout.addWidget(self._build_toolbar())
         layout.addWidget(self._build_summary())
         self.missing_banner = QLabel()
         self.missing_banner.setStyleSheet(
-            "background-color: #fff3e0; color: #e65100; "
-            "padding: 8px; border-radius: 4px;"
+            "background-color:#fff3e0;color:#e65100;padding:8px;"
         )
         self.missing_banner.hide()
         layout.addWidget(self.missing_banner)
-
         self.review_grid = ReviewGridWidget()
-        self.review_grid.edit_requested.connect(self._update_review_field)
         self.review_grid.original_requested.connect(self._open_original)
-        self.review_grid.exclude_requested.connect(
-            lambda record_id: self._set_status(
-                [record_id], ReviewStatus.EXCLUDED
-            )
-        )
+        self.review_grid.exclude_requested.connect(self._exclude_row)
+        self.review_grid.review_requested.connect(self._review_problem_row)
         layout.addWidget(self.review_grid)
         layout.addWidget(self._build_action_bar())
         self.setCentralWidget(central)
-        self._reload_records()
+        self._reload_rows()
 
     def _build_toolbar(self) -> QWidget:
         bar = QWidget()
         layout = QHBoxLayout(bar)
-        self.date_edit = QDateEdit(QDate.currentDate())
-        self.date_edit.setCalendarPopup(True)
+        today = QDate.currentDate()
+        yesterday = today.addDays(-1)
+        self.received_date_edit = QDateEdit(today)
+        self.received_date_edit.setCalendarPopup(True)
+        self.work_date_from_edit = QDateEdit(yesterday)
+        self.work_date_from_edit.setCalendarPopup(True)
+        self.work_date_to_edit = QDateEdit(yesterday)
+        self.work_date_to_edit.setCalendarPopup(True)
         self.folder_combo = QComboBox()
         self.folder_combo.setEditable(True)
         folder = self._services.settings_service.get_setting(
@@ -82,11 +88,15 @@ class MainWindow(QMainWindow):
         self.fetch_button.clicked.connect(self.start_collection)
         self.settings_button = QPushButton("⚙ 설정")
         self.settings_button.clicked.connect(self._open_settings)
-        self.progress_label = QLabel("")
-        layout.addWidget(QLabel("조회 날짜"))
-        layout.addWidget(self.date_edit)
-        layout.addWidget(QLabel("폴더"))
-        layout.addWidget(self.folder_combo)
+        self.progress_label = QLabel()
+        for label, widget in (
+            ("메일 수신일", self.received_date_edit),
+            ("작업일 시작", self.work_date_from_edit),
+            ("작업일 종료", self.work_date_to_edit),
+            ("폴더", self.folder_combo),
+        ):
+            layout.addWidget(QLabel(label))
+            layout.addWidget(widget)
         layout.addWidget(self.fetch_button)
         layout.addWidget(self.progress_label)
         layout.addStretch()
@@ -100,13 +110,13 @@ class MainWindow(QMainWindow):
         for title in (
             "대상 인원",
             "수신 메일",
-            "정상",
+            "취합 행",
             "검토 필요",
+            "차단 오류",
             "미보고",
-            "중복 의심",
         ):
-            tile, value_label = self._stat_tile(title)
-            self._summary_labels[title] = value_label
+            tile, value = self._stat_tile(title)
+            self._summary_labels[title] = value
             layout.addWidget(tile)
         return summary
 
@@ -115,58 +125,46 @@ class MainWindow(QMainWindow):
         tile = QFrame()
         tile.setFrameShape(QFrame.Shape.StyledPanel)
         layout = QVBoxLayout(tile)
-        value_label = QLabel("0")
-        value_label.setStyleSheet("font-size: 20px; font-weight: 700;")
-        title_label = QLabel(title)
-        title_label.setStyleSheet("color: #666;")
-        layout.addWidget(value_label)
-        layout.addWidget(title_label)
-        return tile, value_label
+        value = QLabel("0")
+        value.setStyleSheet("font-size:20px;font-weight:700;")
+        layout.addWidget(value)
+        layout.addWidget(QLabel(title))
+        return tile, value
 
     def _build_action_bar(self) -> QWidget:
         bar = QWidget()
         layout = QHBoxLayout(bar)
-        layout.addStretch()
-        self.exclude_button = QPushButton("선택 항목 반영 제외")
-        self.review_button = QPushButton("검토 완료 처리")
+        self.manual_button = QPushButton("수동 행 추가")
+        self.manual_button.clicked.connect(self._add_manual_row)
+        self.preview_button = QPushButton("최종 표 미리보기")
+        self.preview_button.clicked.connect(self._open_final_preview)
         self.excel_button = QPushButton("Excel 반영")
-        self.log_button = QPushButton("처리 로그 보기")
-        self.exclude_button.clicked.connect(
-            lambda: self._set_status(
-                self.review_grid.checked_record_ids(), ReviewStatus.EXCLUDED
-            )
-        )
-        self.review_button.clicked.connect(
-            lambda: self._set_status(
-                self.review_grid.checked_record_ids(), ReviewStatus.REVIEWED
-            )
-        )
         self.excel_button.clicked.connect(self._show_excel_notice)
-        self.log_button.clicked.connect(
-            lambda: QMessageBox.information(
-                self, "처리 로그", "처리 로그 화면은 후속 작업에서 제공됩니다."
-            )
-        )
-        for button in (
-            self.exclude_button,
-            self.review_button,
-            self.excel_button,
-            self.log_button,
-        ):
-            layout.addWidget(button)
+        layout.addWidget(self.manual_button)
+        layout.addStretch()
+        layout.addWidget(self.preview_button)
+        layout.addWidget(self.excel_button)
         return bar
 
     def start_collection(self) -> None:
-        if self._collection_worker is not None and self._collection_worker.isRunning():
+        if self._collection_worker and self._collection_worker.isRunning():
+            return
+        date_from, date_to = self._selected_work_range()
+        if date_from > date_to:
+            QMessageBox.warning(
+                self, "날짜 확인", "작업일 시작은 종료보다 늦을 수 없습니다."
+            )
             return
         self.fetch_button.setEnabled(False)
         self.progress_label.setText("메일 분석 중…")
         worker = CollectionWorker(
-            self._selected_date(),
+            self._qdate_to_date(self.received_date_edit.date()),
+            date_from,
+            date_to,
             self.folder_combo.currentText().strip() or "Inbox",
             self._services.mail_collection_service,
             self._services.extraction_orchestrator,
-            self._services.review_service,
+            self._services.work_report_service,
         )
         worker.completed.connect(self.apply_collection_result)
         worker.failed.connect(self._collection_failed)
@@ -180,7 +178,7 @@ class MainWindow(QMainWindow):
         self._last_missing_names = tuple(
             employee.name for employee in result.collection.missing_employees
         )
-        self._apply_records(result.records)
+        self._apply_rows(result.work_report_rows)
         errors = result.collection.errors + result.extraction.errors
         if errors:
             QMessageBox.warning(
@@ -203,40 +201,40 @@ class MainWindow(QMainWindow):
             self._collection_worker.deleteLater()
             self._collection_worker = None
 
-    def _reload_records(self) -> None:
-        records = tuple(
-            self._services.review_service.list_records(self._selected_date())
+    def _reload_rows(self) -> None:
+        date_from, date_to = self._selected_work_range()
+        result = self._services.work_report_service.list_rows(
+            date_from, date_to
         )
         self._last_target_count = len(
             self._services.settings_service.list_employees(active_only=True)
         )
-        self._apply_records(records)
+        self._apply_rows(result.rows)
 
-    def _apply_records(self, records: tuple[ReviewRecord, ...] | list[ReviewRecord]) -> None:
-        self.review_grid.set_rows([_to_review_row(record) for record in records])
-        normal = sum(
-            record.review_status is ReviewStatus.NORMAL for record in records
+    def _apply_rows(self, rows: tuple[WorkReportRow, ...]) -> None:
+        self._rows = tuple(rows)
+        self.review_grid.set_rows(list(rows))
+        warning_count = sum(
+            bool(row.issue_codes) and row.included for row in rows
         )
-        review_needed = sum(
-            record.review_status
-            not in {
-                ReviewStatus.NORMAL,
-                ReviewStatus.REVIEWED,
-                ReviewStatus.EXCLUDED,
-            }
-            for record in records
-        )
-        duplicate = sum(
-            record.review_status is ReviewStatus.DUPLICATE_SUSPECTED
-            for record in records
+        blocking_codes = {
+            WorkReportIssueCode.DATE_UNRESOLVED,
+            WorkReportIssueCode.CUMULATIVE_BASELINE_REQUIRED,
+            WorkReportIssueCode.DUPLICATE_UNRESOLVED,
+            WorkReportIssueCode.SERIES_KEY_MISSING,
+            WorkReportIssueCode.INVALID_VALUE,
+        }
+        blocking_count = sum(
+            bool(set(row.issue_codes) & blocking_codes) and row.included
+            for row in rows
         )
         values = {
             "대상 인원": self._last_target_count,
             "수신 메일": self._last_received_count,
-            "정상": normal,
-            "검토 필요": review_needed,
+            "취합 행": len(rows),
+            "검토 필요": warning_count,
+            "차단 오류": blocking_count,
             "미보고": len(self._last_missing_names),
-            "중복 의심": duplicate,
         }
         for title, value in values.items():
             self._summary_labels[title].setText(str(value))
@@ -247,30 +245,117 @@ class MainWindow(QMainWindow):
             )
             self.missing_banner.show()
         else:
-            self.missing_banner.clear()
             self.missing_banner.hide()
 
-    def _update_review_field(
-        self, record_id: int, field_name: str, value: str
+    def _add_manual_row(self) -> None:
+        dialog = ManualRowDialog(self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        try:
+            self._services.work_report_service.add_manual_row(
+                **dialog.values()
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "수동 행 추가 실패", str(exc))
+            return
+        self._reload_rows()
+
+    def _review_problem_row(self, row_id: int) -> None:
+        row = next((item for item in self._rows if item.row_id == row_id), None)
+        if row is None:
+            return
+        if WorkReportIssueCode.DUPLICATE_UNRESOLVED in row.issue_codes:
+            selected = self.review_grid.checked_row_ids()
+            if row_id not in selected:
+                selected.append(row_id)
+            if len(selected) < 2:
+                QMessageBox.information(
+                    self, "중복 행 선택", "중복 후보 행을 함께 선택해 주세요."
+                )
+                return
+            dialog = ProblemReviewDialog(duplicate_mode=True, parent=self)
+            if dialog.exec() == dialog.DialogCode.Accepted:
+                values = dialog.values()
+                self._services.work_report_service.resolve_duplicate(
+                    selected,
+                    str(values["duplicate_decision"]),
+                    resolution_note=str(values["resolution_note"]),
+                )
+                self._reload_rows()
+            return
+        dialog = ProblemReviewDialog(
+            reported_daily=row.reported_daily_man_day,
+            calculated_daily=row.calculated_daily_man_day,
+            reported_cumulative=row.reported_cumulative_man_day,
+            calculated_cumulative=row.calculated_cumulative_man_day,
+            parent=self,
+        )
+        if row.confirmed_daily_man_day is not None:
+            dialog.confirmed_daily_edit.setText(
+                str(row.confirmed_daily_man_day)
+            )
+        if row.confirmed_cumulative_man_day is not None:
+            dialog.confirmed_cumulative_edit.setText(
+                str(row.confirmed_cumulative_man_day)
+            )
+        if dialog.exec() == dialog.DialogCode.Accepted:
+            try:
+                self._services.work_report_service.confirm_row(
+                    row_id, **dialog.values()
+                )
+            except ValueError as exc:
+                QMessageBox.warning(self, "행 확정 실패", str(exc))
+            self._reload_rows()
+
+    def _exclude_row(self, row_id: int) -> None:
+        self._services.work_report_service.set_included(
+            row_id, False, resolution_note="사용자 반영 제외"
+        )
+        self._reload_rows()
+
+    def _open_final_preview(self) -> None:
+        date_from, date_to = self._selected_work_range()
+        preview = self._services.final_report_service.preview(
+            date_from, date_to
+        )
+        dialog = FinalReportDialog(preview, self)
+        dialog.confirm_requested.connect(
+            lambda: self._confirm_final(dialog, date_from, date_to)
+        )
+        dialog.copy_requested.connect(lambda: self._copy_final(dialog))
+        dialog.exec()
+
+    def _confirm_final(
+        self, dialog: FinalReportDialog, date_from: date, date_to: date
     ) -> None:
         try:
-            self._services.review_service.update_field(
-                record_id, field_name, value
+            snapshot = self._services.final_report_service.confirm(
+                date_from, date_to
             )
-        except InvalidReviewValueError as exc:
-            QMessageBox.warning(self, "입력값 확인", str(exc))
-        self._reload_records()
-
-    def _set_status(
-        self, record_ids: list[int], status: ReviewStatus
-    ) -> None:
-        if not record_ids:
-            QMessageBox.information(self, "선택 필요", "처리할 행을 선택해 주세요.")
+        except ValueError as exc:
+            QMessageBox.warning(self, "최종 확정 실패", str(exc))
+            dialog.invalidate_confirmation()
             return
-        self._services.review_service.set_status(record_ids, status)
-        self._reload_records()
+        dialog.set_confirmed_report(
+            snapshot, self._services.report_renderer.render(snapshot)
+        )
+
+    def _copy_final(self, dialog: FinalReportDialog) -> None:
+        if dialog.snapshot is None or dialog.rendered_report is None:
+            return
+        try:
+            self._clipboard_writer.write(dialog.rendered_report)
+        except RuntimeError as exc:
+            QMessageBox.warning(self, "표 복사 실패", str(exc))
+            return
+        updated = self._services.final_report_service.mark_copied(
+            dialog.snapshot.report_id
+        )
+        dialog.set_confirmed_report(updated, dialog.rendered_report)
 
     def _open_original(self, mail_entry_id: str) -> None:
+        if not mail_entry_id:
+            return
         try:
             self._services.review_service.open_original(mail_entry_id)
         except (OSError, RuntimeError, ValueError) as exc:
@@ -278,12 +363,12 @@ class MainWindow(QMainWindow):
 
     def _open_settings(self) -> None:
         dialog = SettingsDialog(self._services.settings_service, self)
-        if dialog.exec() == SettingsDialog.DialogCode.Accepted:
+        if dialog.exec() == dialog.DialogCode.Accepted:
             folder = self._services.settings_service.get_setting(
                 "outlook_folder", "Inbox"
             )
             self.folder_combo.setCurrentText(folder or "Inbox")
-            self._reload_records()
+            self._reload_rows()
 
     def _show_excel_notice(self) -> None:
         QMessageBox.information(
@@ -296,29 +381,12 @@ class MainWindow(QMainWindow):
     def summary_value(self, title: str) -> str:
         return self._summary_labels[title].text()
 
-    def _selected_date(self) -> date:
-        selected = self.date_edit.date()
-        return date(selected.year(), selected.month(), selected.day())
+    def _selected_work_range(self) -> tuple[date, date]:
+        return (
+            self._qdate_to_date(self.work_date_from_edit.date()),
+            self._qdate_to_date(self.work_date_to_edit.date()),
+        )
 
-
-def _to_review_row(record: ReviewRecord) -> ReviewRow:
-    return ReviewRow(
-        report_date=record.report_date.isoformat(),
-        author=record.sender_name,
-        equipment_name=record.equipment_name or "",
-        tracking_no=record.tracking_no or "",
-        vendor_name=record.vendor_name or "",
-        actual_headcount=_display_number(record.actual_headcount),
-        daily_man_day=_display_number(record.daily_man_day),
-        cumulative_man_day=_display_number(record.cumulative_man_day),
-        confidence=record.confidence,
-        status=record.review_status,
-        record_id=record.record_id,
-        mail_entry_id=record.mail_entry_id,
-    )
-
-
-def _display_number(value: float | None) -> str:
-    if value is None:
-        return ""
-    return str(value)
+    @staticmethod
+    def _qdate_to_date(value: QDate) -> date:
+        return date(value.year(), value.month(), value.day())

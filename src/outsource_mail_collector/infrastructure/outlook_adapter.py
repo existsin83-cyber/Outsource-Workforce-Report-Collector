@@ -116,7 +116,7 @@ class OutlookComAdapter:
             sender_name=str(item.SenderName or ""),
             sender_email=_resolve_smtp(item).strip().lower(),
             received_at=received_at,
-            report_date=received_at.date(),
+            report_date=None,
             body_text=str(item.Body or ""),
             body_html=str(item.HTMLBody or ""),
             source_folder=source_folder,

@@ -53,6 +53,30 @@ def test_settings_dialog_saves_employee_and_vendor_rows(tmp_path):
     assert vendor.aliases == ("A사", "협력 A")
 
 
+def test_vendor_rows_keep_insertion_order_for_report_sorting(tmp_path):
+    _app()
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    dialog = SettingsDialog(SettingsService(repository, FakeOutlookAdapter()))
+    for name in ("업체B", "업체A"):
+        row = dialog.add_vendor_row()
+        dialog.vendor_table.setItem(row, 0, QTableWidgetItem(name))
+
+    dialog.save()
+    first_order = [
+        (vendor.canonical_name, vendor.sort_order)
+        for vendor in repository.list_vendors()
+    ]
+    dialog.save()
+
+    assert [name for name, _order in first_order] == ["업체B", "업체A"]
+    assert [order for _name, order in first_order] == sorted(
+        order for _name, order in first_order
+    )
+    assert [
+        vendor.canonical_name for vendor in repository.list_vendors()
+    ] == ["업체B", "업체A"]
+
+
 def test_folder_worker_emits_real_adapter_folder_results(tmp_path):
     _app()
     worker = FolderLoadWorker(

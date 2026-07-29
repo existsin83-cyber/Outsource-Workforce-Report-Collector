@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import date, datetime
+from decimal import Decimal
 
 import pytest
 
@@ -12,6 +13,10 @@ from outsource_mail_collector.domain.models import (
     OutsourceWorkRecord,
     ReviewStatus,
     ValidationResult,
+)
+from outsource_mail_collector.domain.work_report import (
+    RowSource,
+    WorkReportIssueCode,
 )
 from outsource_mail_collector.infrastructure.db.repository import (
     DuplicateEntityError,
@@ -156,6 +161,155 @@ def test_review_update_and_status_change_write_action_logs(repository):
     ]
     assert '"actual_headcount": 2.0' in (logs[0].before_json or "")
     assert '"actual_headcount": 3.5' in (logs[0].after_json or "")
+
+
+def test_additive_migration_preserves_old_rows_and_is_idempotent(tmp_path):
+    db_path = tmp_path / "old.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE vendors (
+                vendor_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                canonical_name TEXT NOT NULL UNIQUE,
+                aliases_json TEXT,
+                active INTEGER NOT NULL DEFAULT 1
+            );
+            INSERT INTO vendors(canonical_name, aliases_json, active)
+            VALUES ('업체B', '[]', 1), ('업체A', '[]', 1);
+            """
+        )
+
+    first = SQLiteRepository(db_path)
+    second = SQLiteRepository(db_path)
+
+    assert [vendor.canonical_name for vendor in second.list_vendors()] == [
+        "업체B",
+        "업체A",
+    ]
+    with sqlite3.connect(db_path) as conn:
+        vendor_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(vendors)")
+        }
+        mail_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(processed_mails)")
+        }
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert first.db_path == second.db_path
+    assert "sort_order" in vendor_columns
+    assert {
+        "subject_report_date",
+        "body_report_date",
+        "report_date_source",
+        "date_issue_codes_json",
+        "work_date_confirmed",
+    } <= mail_columns
+    assert {"work_report_rows", "final_reports", "final_report_rows"} <= tables
+
+
+def test_work_report_rows_round_trip_decimal_values_and_allow_duplicates(
+    repository,
+):
+    common = dict(
+        work_date=date(2026, 7, 29),
+        work_date_confirmed=True,
+        vendor_name="업체A",
+        tracking_no="AB260101",
+        equipment_name="장비 1",
+        business_team="WA",
+        actual_headcount=2,
+        per_person_man_day=Decimal("1.5"),
+        reported_daily_man_day=Decimal("4.0"),
+        calculated_daily_man_day=Decimal("3.0"),
+        confirmed_daily_man_day=None,
+        reported_cumulative_man_day=Decimal("20.0"),
+        calculated_cumulative_man_day=Decimal("19.0"),
+        confirmed_cumulative_man_day=None,
+        cumulative_series_key="업체a|T:AB260101",
+        issue_codes=(WorkReportIssueCode.DAILY_MISMATCH,),
+        review_status=ReviewStatus.NORMAL,
+        included=True,
+        resolution_note=None,
+    )
+    first = repository.get_or_create_mail_report_row(
+        extracted_record_id=1,
+        mail_entry_id="ENTRY-A",
+        **common,
+    )
+    same = repository.get_or_create_mail_report_row(
+        extracted_record_id=1,
+        mail_entry_id="ENTRY-A",
+        **common,
+    )
+    duplicate = repository.get_or_create_mail_report_row(
+        extracted_record_id=2,
+        mail_entry_id="ENTRY-B",
+        **common,
+    )
+    manual = repository.create_manual_report_row(**common)
+
+    assert same.row_id == first.row_id
+    assert duplicate.row_id != first.row_id
+    assert manual.source_type is RowSource.MANUAL
+    assert manual.mail_entry_id is None
+    assert first.reported_daily_man_day == Decimal("4.0")
+    assert first.calculated_daily_man_day == Decimal("3.0")
+    assert first.issue_codes == (WorkReportIssueCode.DAILY_MISMATCH,)
+
+
+def test_confirmation_and_snapshot_are_audited_and_immutable(repository):
+    row = repository.create_manual_report_row(
+        work_date=date(2026, 7, 29),
+        work_date_confirmed=True,
+        vendor_name="업체A",
+        tracking_no="AB260101",
+        equipment_name="장비 1",
+        business_team="WA",
+        actual_headcount=2,
+        per_person_man_day=Decimal("1.5"),
+        reported_daily_man_day=None,
+        calculated_daily_man_day=Decimal("3.0"),
+        confirmed_daily_man_day=None,
+        reported_cumulative_man_day=None,
+        calculated_cumulative_man_day=Decimal("12.0"),
+        confirmed_cumulative_man_day=None,
+        cumulative_series_key="업체a|T:AB260101",
+        issue_codes=(WorkReportIssueCode.DAILY_MISSING,),
+        review_status=ReviewStatus.NORMAL,
+        included=True,
+        resolution_note=None,
+    )
+    confirmed = repository.confirm_work_report_row(
+        row.row_id,
+        confirmed_daily_man_day=Decimal("3.0"),
+        confirmed_cumulative_man_day=Decimal("12.0"),
+        resolution_note="계산값 확인",
+    )
+    report = repository.create_final_report_snapshot(
+        date_from=date(2026, 7, 29),
+        date_to=date(2026, 7, 29),
+        rows=[confirmed],
+        snapshot_hash="hash-1",
+    )
+    repository.update_work_report_row(
+        row.row_id,
+        {"confirmed_daily_man_day": Decimal("4.0")},
+        resolution_note="정정",
+    )
+    repository.mark_final_report_copied(report.report_id)
+    stored_report = repository.get_final_report(report.report_id)
+
+    assert stored_report.rows[0].confirmed_daily_man_day == Decimal("3.0")
+    assert stored_report.copied_at is not None
+    assert [log.action for log in repository.list_action_logs()][-3:] == [
+        "WORK_REPORT_ROW_CONFIRMED",
+        "WORK_REPORT_ROW_UPDATED",
+        "FINAL_REPORT_COPIED",
+    ]
 
 
 def _mail_record() -> MailRecord:

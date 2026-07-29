@@ -15,8 +15,20 @@ from outsource_mail_collector.application.extraction_orchestrator import (
 from outsource_mail_collector.application.mail_collection_service import (
     MailCollectionService,
 )
+from outsource_mail_collector.application.final_report_service import (
+    FinalReportService,
+)
+from outsource_mail_collector.application.man_day_calculation_service import (
+    ManDayCalculationService,
+)
+from outsource_mail_collector.application.report_renderer import (
+    HtmlReportRenderer,
+)
 from outsource_mail_collector.application.review_service import ReviewService
 from outsource_mail_collector.application.settings_service import SettingsService
+from outsource_mail_collector.application.work_report_service import (
+    WorkReportService,
+)
 from outsource_mail_collector.infrastructure.db.repository import (
     SQLiteRepository,
     default_db_path,
@@ -30,12 +42,17 @@ def build_services(db_path: Path | None = None) -> ApplicationServices:
 
     repository = SQLiteRepository(db_path or default_db_path())
     outlook = OutlookComAdapter()
+    calculation = ManDayCalculationService()
     return ApplicationServices(
         mail_collection_service=MailCollectionService(repository, outlook),
         extraction_orchestrator=ExtractionOrchestrator(repository),
         review_service=ReviewService(repository, outlook),
         excel_export_service=ExcelExportService(repository, excel_adapter=None),
         settings_service=SettingsService(repository, outlook),
+        man_day_calculation_service=calculation,
+        work_report_service=WorkReportService(repository, calculation),
+        final_report_service=FinalReportService(repository),
+        report_renderer=HtmlReportRenderer(),
     )
 
 

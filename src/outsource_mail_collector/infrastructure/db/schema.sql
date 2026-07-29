@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS vendors (
     vendor_id INTEGER PRIMARY KEY AUTOINCREMENT,
     canonical_name TEXT NOT NULL UNIQUE,
     aliases_json TEXT,
-    active INTEGER NOT NULL DEFAULT 1
+    active INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS processed_mails (
@@ -30,7 +31,12 @@ CREATE TABLE IF NOT EXISTS processed_mails (
     report_date TEXT,
     content_hash TEXT,
     status TEXT,
-    processed_at TEXT
+    processed_at TEXT,
+    subject_report_date TEXT,
+    body_report_date TEXT,
+    report_date_source TEXT,
+    date_issue_codes_json TEXT,
+    work_date_confirmed INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS extracted_records (
@@ -73,3 +79,73 @@ CREATE TABLE IF NOT EXISTS action_logs (
     error_message TEXT,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS work_report_rows (
+    row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_type TEXT NOT NULL,
+    extracted_record_id INTEGER,
+    mail_entry_id TEXT,
+    work_date TEXT,
+    work_date_confirmed INTEGER NOT NULL DEFAULT 0,
+    vendor_name TEXT,
+    tracking_no TEXT,
+    equipment_name TEXT,
+    business_team TEXT,
+    actual_headcount INTEGER,
+    per_person_man_day TEXT,
+    reported_daily_man_day TEXT,
+    calculated_daily_man_day TEXT,
+    confirmed_daily_man_day TEXT,
+    reported_cumulative_man_day TEXT,
+    calculated_cumulative_man_day TEXT,
+    confirmed_cumulative_man_day TEXT,
+    cumulative_series_key TEXT,
+    issue_codes_json TEXT NOT NULL DEFAULT '[]',
+    review_status TEXT NOT NULL,
+    included INTEGER NOT NULL DEFAULT 1,
+    warning_confirmed INTEGER NOT NULL DEFAULT 0,
+    resolution_note TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS final_reports (
+    report_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date_from TEXT NOT NULL,
+    date_to TEXT NOT NULL,
+    snapshot_hash TEXT NOT NULL,
+    confirmed_at TEXT NOT NULL,
+    copied_at TEXT,
+    invalidated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS final_report_rows (
+    snapshot_row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id INTEGER NOT NULL REFERENCES final_reports (report_id),
+    source_row_id INTEGER NOT NULL,
+    work_date TEXT NOT NULL,
+    vendor_name TEXT NOT NULL,
+    vendor_sort_order INTEGER NOT NULL DEFAULT 0,
+    tracking_no TEXT,
+    equipment_name TEXT,
+    business_team TEXT,
+    actual_headcount INTEGER NOT NULL,
+    per_person_man_day TEXT NOT NULL,
+    confirmed_daily_man_day TEXT NOT NULL,
+    confirmed_cumulative_man_day TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_work_report_date
+ON work_report_rows(work_date);
+
+CREATE INDEX IF NOT EXISTS idx_work_report_series
+ON work_report_rows(cumulative_series_key, work_date);
+
+CREATE INDEX IF NOT EXISTS idx_work_report_source
+ON work_report_rows(extracted_record_id);
+
+CREATE INDEX IF NOT EXISTS idx_work_report_duplicate
+ON work_report_rows(work_date, vendor_name, tracking_no, equipment_name);
+
+CREATE INDEX IF NOT EXISTS idx_final_report_rows_report
+ON final_report_rows(report_id, snapshot_row_id);

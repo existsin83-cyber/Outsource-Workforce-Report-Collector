@@ -367,5 +367,33 @@ AI Adapter는 인터페이스로 분리해 외부 API, 사내 모델, 로컬 모
 3. Excel 직접 입력 전에 검토 그리드를 둔다.
 4. 원본 데이터 시트에 행 단위로 저장한다.
 5. Outlook EntryID와 레코드 해시를 함께 사용해 중복을 방지한다.
+
+## 11. 상세 공수표 취합 확장
+
+```text
+Outlook read-only
+  → ExtractionOrchestrator
+  → WorkDateResolver
+  → WorkReportService
+      ├─ ManDayCalculationService
+      └─ SQLite work_report_rows
+  → FinalReportService
+  → immutable final_report_rows
+  → HtmlReportRenderer
+  → Qt Clipboard (HTML + plain text)
+  → 사용자가 Outlook 본문에 붙여 넣기
+```
+
+- `domain/`은 날짜 출처, 행 출처, 문제 코드와 공수 값 형식만 정의하며 PySide6,
+  Outlook, Excel, SQLite에 의존하지 않는다.
+- `parsing/`의 작업일 판정은 제목을 우선하고 본문·수신일 불일치 근거만 반환한다.
+- `application/`은 보고값, 계산값, 확정값을 분리하고 최초 누적 기준을 추정하지
+  않는다.
+- `infrastructure/db/`는 취합 후보와 최종 스냅샷을 별도 테이블에 저장한다.
+- `ui/`는 계산하지 않고 서비스 결과를 표시하며 수동 입력과 검토 결정을 전달한다.
+- 클립보드 복사 성공 후에만 복사 시각을 기록한다.
+- 원본 행 변경은 현재 최종 확인을 무효화하지만 이전 스냅샷을 수정하지 않는다.
+
+이번 확장은 Outlook 쓰기, 메일 자동 발송, Excel 쓰기를 추가하지 않는다.
 6. 메일 분석 실패는 전체 작업 중단이 아니라 개별 검토 대상으로 처리한다.
 7. 외부 AI는 MVP 범위에서 제외한다.

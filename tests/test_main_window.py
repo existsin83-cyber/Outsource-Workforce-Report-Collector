@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from types import SimpleNamespace
 
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
+import outsource_mail_collector.ui.main_window as main_window_module
 from outsource_mail_collector.application.models import (
     CollectionResult,
     CollectionWorkflowResult,
     ExtractionResult,
-    ReviewRecord,
+    FinalReportPreview,
+    WorkReportRangeResult,
+    WorkReportRow,
 )
 from outsource_mail_collector.domain.models import ReviewStatus
+from outsource_mail_collector.domain.work_report import RowSource
 from outsource_mail_collector.ui.main_window import MainWindow
 
 
@@ -19,17 +24,20 @@ def _app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def test_window_starts_without_dummy_rows():
+def test_window_has_received_date_and_work_date_range_controls():
     _app()
     window = MainWindow(_services())
 
-    assert window.review_grid.rowCount() == 0
-    assert window.summary_value("수신 메일") == "0"
+    assert window.received_date_edit is not None
+    assert window.work_date_from_edit is not None
+    assert window.work_date_to_edit is not None
+    assert window.review_grid.rowCount() == 1
 
 
-def test_apply_collection_result_updates_grid_summary_and_missing_banner():
+def test_apply_collection_result_populates_extended_work_rows():
     _app()
-    window = MainWindow(_services())
+    services = _services()
+    window = MainWindow(services)
     workflow = CollectionWorkflowResult(
         collection=CollectionResult(
             mails=(),
@@ -41,19 +49,80 @@ def test_apply_collection_result_updates_grid_summary_and_missing_banner():
             received_mail_count=2,
         ),
         extraction=ExtractionResult(records=(), skipped_mail_ids=(), errors=()),
-        records=(
-            _record(1, ReviewStatus.NORMAL),
-            _record(2, ReviewStatus.VENDOR_UNCONFIRMED),
-        ),
+        records=(),
+        work_report_rows=(_row(2),),
     )
 
     window.apply_collection_result(workflow)
 
-    assert window.review_grid.rowCount() == 2
+    assert window.review_grid.rowCount() == 1
     assert window.summary_value("대상 인원") == "2"
     assert window.summary_value("수신 메일") == "2"
-    assert window.summary_value("검토 필요") == "1"
     assert "김철수" in window.missing_banner.text()
+
+
+def test_manual_row_button_calls_work_report_service(monkeypatch):
+    _app()
+    services = _services()
+    window = MainWindow(services)
+
+    class FakeManualDialog:
+        DialogCode = QDialog.DialogCode
+
+        def __init__(self, parent=None):
+            pass
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def values(self):
+            return {
+                "work_date": date(2026, 8, 1),
+                "vendor_name": "업체A",
+                "tracking_no": "AB260101",
+                "equipment_name": "장비 1",
+                "business_team": "WA",
+                "actual_headcount": 2,
+                "per_person_man_day": Decimal("1.5"),
+                "reported_daily_man_day": None,
+                "reported_cumulative_man_day": Decimal("12.0"),
+                "resolution_note": "주말 작업",
+            }
+
+    monkeypatch.setattr(
+        main_window_module, "ManualRowDialog", FakeManualDialog
+    )
+
+    window.manual_button.click()
+
+    assert len(services.work_report_service.manual_calls) == 1
+
+
+def test_preview_button_invokes_final_report_service(monkeypatch):
+    _app()
+    services = _services()
+    window = MainWindow(services)
+
+    class _Signal:
+        def connect(self, callback):
+            self.callback = callback
+
+    class FakeFinalDialog:
+        def __init__(self, preview, parent=None):
+            self.preview = preview
+            self.confirm_requested = _Signal()
+            self.copy_requested = _Signal()
+
+        def exec(self):
+            return 0
+
+    monkeypatch.setattr(
+        main_window_module, "FinalReportDialog", FakeFinalDialog
+    )
+
+    window.preview_button.click()
+
+    assert len(services.final_report_service.preview_calls) == 1
 
 
 def test_excel_button_shows_preparation_notice(monkeypatch):
@@ -73,23 +142,29 @@ def test_excel_button_shows_preparation_notice(monkeypatch):
     assert "실 워크북 확보 후 사용할 수 있습니다." in shown[0][1]
 
 
-def _record(record_id: int, status: ReviewStatus) -> ReviewRecord:
-    return ReviewRecord(
-        record_id=record_id,
-        mail_entry_id=f"ENTRY-{record_id}",
-        report_date=date(2026, 7, 24),
-        sender_name="홍길동",
-        sender_email="hong@example.com",
-        equipment_name="장비A",
-        tracking_no="AB260101",
-        vendor_name="협력사A",
-        actual_headcount=2.0,
-        daily_man_day=4.0,
-        cumulative_man_day=18.5,
-        confidence=0.9,
-        review_status=status,
-        note=None,
-    )
+class _WorkReportService:
+    def __init__(self) -> None:
+        self.rows = [_row(1)]
+        self.manual_calls: list[dict] = []
+
+    def list_rows(self, date_from, date_to):
+        return WorkReportRangeResult(tuple(self.rows), 0, 0)
+
+    def add_manual_row(self, **values):
+        self.manual_calls.append(values)
+        return self.rows[0]
+
+    def set_included(self, *args, **kwargs):
+        return self.rows[0]
+
+
+class _FinalReportService:
+    def __init__(self) -> None:
+        self.preview_calls: list[tuple[date, date]] = []
+
+    def preview(self, date_from, date_to):
+        self.preview_calls.append((date_from, date_to))
+        return FinalReportPreview(date_from, date_to, tuple(), tuple())
 
 
 def _services():
@@ -99,16 +174,44 @@ def _services():
         ),
         list_employees=lambda active_only=False: [],
     )
-    review = SimpleNamespace(
-        update_field=lambda *args: None,
-        set_status=lambda *args: [],
-        open_original=lambda *args: None,
-        list_records=lambda report_date: [],
-    )
+    review = SimpleNamespace(open_original=lambda *args: None)
     return SimpleNamespace(
         settings_service=settings,
         review_service=review,
         mail_collection_service=SimpleNamespace(),
         extraction_orchestrator=SimpleNamespace(),
         excel_export_service=SimpleNamespace(),
+        work_report_service=_WorkReportService(),
+        final_report_service=_FinalReportService(),
+        report_renderer=SimpleNamespace(),
+        clipboard_writer=SimpleNamespace(),
+    )
+
+
+def _row(row_id: int) -> WorkReportRow:
+    return WorkReportRow(
+        row_id=row_id,
+        source_type=RowSource.MAIL,
+        extracted_record_id=row_id,
+        mail_entry_id=f"ENTRY-{row_id}",
+        work_date=date.today(),
+        work_date_confirmed=True,
+        vendor_name="업체A",
+        tracking_no="AB260101",
+        equipment_name="장비 1",
+        business_team="WA",
+        actual_headcount=2,
+        per_person_man_day=Decimal("1.5"),
+        reported_daily_man_day=Decimal("3.0"),
+        calculated_daily_man_day=Decimal("3.0"),
+        confirmed_daily_man_day=Decimal("3.0"),
+        reported_cumulative_man_day=Decimal("12.0"),
+        calculated_cumulative_man_day=Decimal("12.0"),
+        confirmed_cumulative_man_day=Decimal("12.0"),
+        cumulative_series_key="업체a|T:AB260101",
+        issue_codes=(),
+        review_status=ReviewStatus.NORMAL,
+        included=True,
+        warning_confirmed=True,
+        resolution_note=None,
     )

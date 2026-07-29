@@ -545,5 +545,41 @@ SQLite 파일: `app_data.db`
 - 회사 보안 프로그램에서 COM 접근 허용 여부
 - Outlook 받은편지함 외 공유 사서함 사용 가능성
 - 실제 Excel 파일의 병합 셀·수식·외부 링크 구조
+
+## 15. 상세 공수표 취합 구현
+
+### 15.1 추가 애플리케이션 서비스
+
+- `ManDayCalculationService`: `Decimal` 기반 투입·누적 공수 계산과
+  보고값/계산값 비교
+- `WorkReportService`: 추출 행과 수동 행 동기화, 누적 계열 연결, 중복 후보 관리
+- `FinalReportService`: 차단 조건 재검증, 업체 설정 순서 정렬, 불변 스냅샷 생성
+- `HtmlReportRenderer`: 저장소나 COM에 의존하지 않는 HTML/일반 텍스트 렌더링
+
+작업일 판정은 `parsing/work_date_parser.py`의 순수 함수로 수행한다. 추출 파이프라인
+순서 `normalize → split_sections → extract_work_records → validate`는 변경하지
+않는다.
+
+### 15.2 SQLite 추가 구조
+
+- `processed_mails`: 제목·본문 날짜 근거, 날짜 출처, 날짜 경고, 확인 여부
+- `vendors.sort_order`: 최종 보고서 업체 정렬 순서
+- `work_report_rows`: 메일/수동 취합 행과 보고·계산·확정 공수
+- `final_reports`: 확정 범위, 해시, 확정·복사·무효화 시각
+- `final_report_rows`: 확정 시점의 출력 행 스냅샷
+
+공수는 SQLite `TEXT`에 정규화된 10진 문자열로 저장한다. 기존 테이블은 삭제하거나
+재작성하지 않고 `PRAGMA table_info` 기반 additive migration으로 확장한다.
+중복·수정 보고 후보는 모두 보존해야 하므로 취합 업무 키에 unique 제약을 두지
+않는다.
+
+### 15.3 UI 및 클립보드 경계
+
+메일 수신 조회일과 작업일 시작·종료 범위를 별도 컨트롤로 제공한다. 검토 표는
+메일·계산·확정 투입/누적값을 동시에 보여주고 문제 행을 개별 확인하게 한다.
+최종 미리보기에서 전체 확인이 끝난 뒤에만 복사를 활성화한다.
+
+클립보드는 Qt `QMimeData`에 `text/html`과 `text/plain`을 함께 기록한다. Outlook
+및 Excel COM은 이 출력 경로에 사용하지 않는다.
 - 메일 표가 HTML table인지 붙여넣기 이미지인지
 - 프로그램 배포 시 관리자 권한 필요 여부

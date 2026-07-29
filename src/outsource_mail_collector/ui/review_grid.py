@@ -1,229 +1,167 @@
-"""리뷰 그리드 위젯.
-
-승인된 review_grid_mockup.html 레이아웃을 PySide6 로 그대로 옮긴다. 실 Outlook
-조회/추출 파이프라인과의 연결은 아직 없고(TODO), 지금은 더미 데이터로 그리드
-구성 자체(체크박스/편집 가능 셀/신뢰도 바/상태 배지/행 액션)만 검증한다.
-"""
+"""Extended work-report review grid backed by application DTOs."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from decimal import Decimal
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
     QHeaderView,
-    QLabel,
-    QProgressBar,
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
     QWidget,
 )
 
+from outsource_mail_collector.application.models import WorkReportRow
 from outsource_mail_collector.domain.models import ReviewStatus
 
-_COLUMNS = [
+
+_COLUMNS = (
     "",
-    "보고일자",
-    "작성자",
+    "작업일",
+    "거래처명",
+    "Tracking No.",
     "장비명",
-    "수주번호/Tracking No.",
-    "외주업체명",
-    "실제 인원",
-    "당일 공수",
-    "누적 공수",
-    "신뢰도",
-    "상태",
+    "사업팀",
+    "실제 작업인원",
+    "인당 공수",
+    "메일 투입",
+    "계산 투입",
+    "확정 투입",
+    "메일 누적",
+    "계산 누적",
+    "확정 누적",
+    "검증 상태",
+    "포함",
     "작업",
-]
-
-# 편집 가능한(더블클릭으로 값 수정) 컬럼 인덱스 — 목업의 점선 밑줄 셀.
-_EDITABLE_COLUMNS = {3, 4, 5, 6, 7, 8}
-_FIELD_BY_COLUMN = {
-    3: "equipment_name",
-    4: "tracking_no",
-    5: "vendor_name",
-    6: "actual_headcount",
-    7: "daily_man_day",
-    8: "cumulative_man_day",
-}
-
-_STATUS_COLORS: dict[ReviewStatus, tuple[str, str]] = {
-    ReviewStatus.NORMAL: ("#2e7d32", "#e8f5e9"),
-    ReviewStatus.REVIEWED: ("#1565c0", "#e3f2fd"),
-    ReviewStatus.EXCLUDED: ("#757575", "#eeeeee"),
-    ReviewStatus.DUPLICATE_SUSPECTED: ("#c62828", "#ffebee"),
-    ReviewStatus.REVISION_SUSPECTED: ("#c62828", "#ffebee"),
-}
-_DEFAULT_STATUS_COLOR = ("#e65100", "#fff3e0")  # 미확인/누락/해석불가 등 검토 필요류
-
-
-def _status_colors(status: ReviewStatus) -> tuple[str, str]:
-    return _STATUS_COLORS.get(status, _DEFAULT_STATUS_COLOR)
-
-
-@dataclass
-class ReviewRow:
-    """그리드 한 행 — OutsourceWorkRecord + EquipmentSection + MailRecord 조인 결과(추후 서비스 계층에서 구성)."""
-
-    report_date: str
-    author: str
-    equipment_name: str
-    tracking_no: str
-    vendor_name: str
-    actual_headcount: str
-    daily_man_day: str
-    cumulative_man_day: str
-    confidence: float
-    status: ReviewStatus
-    record_id: int = 0
-    mail_entry_id: str = ""
-
-
-def _confidence_bar(confidence: float) -> QProgressBar:
-    bar = QProgressBar()
-    bar.setRange(0, 100)
-    bar.setValue(round(confidence * 100))
-    bar.setTextVisible(True)
-    bar.setFormat("%p%")
-    if confidence >= 0.8:
-        chunk_color = "#2e7d32"
-    elif confidence >= 0.5:
-        chunk_color = "#f9a825"
-    else:
-        chunk_color = "#c62828"
-    bar.setStyleSheet(
-        f"QProgressBar {{ border: 1px solid #ccc; border-radius: 4px; text-align: center; }}"
-        f"QProgressBar::chunk {{ background-color: {chunk_color}; border-radius: 4px; }}"
-    )
-    return bar
-
-
-def _status_badge(status: ReviewStatus) -> QLabel:
-    fg, bg = _status_colors(status)
-    label = QLabel(status.value)
-    label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    label.setStyleSheet(
-        f"color: {fg}; background-color: {bg}; border-radius: 8px; padding: 2px 8px; font-weight: 600;"
-    )
-    return label
+)
+_PROBLEM_BACKGROUND = QColor("#fff3e0")
 
 
 class ReviewGridWidget(QTableWidget):
-    edit_requested = Signal(int, str, str)
+    """Display compilation rows while delegating decisions to application services."""
+
     original_requested = Signal(str)
     exclude_requested = Signal(int)
+    review_requested = Signal(int)
 
-    def __init__(self, rows: list[ReviewRow] | None = None, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        rows: list[WorkReportRow] | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(0, len(_COLUMNS), parent)
         self.setHorizontalHeaderLabels(_COLUMNS)
-        self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.horizontalHeader().setStretchLastSection(True)
         self.verticalHeader().setVisible(False)
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.setEditTriggers(
-            QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.EditKeyPressed
-        )
-        self.itemChanged.connect(self._emit_edit)
+        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         if rows:
             self.set_rows(rows)
 
-    def set_rows(self, rows: list[ReviewRow]) -> None:
-        self.blockSignals(True)
+    def set_rows(self, rows: list[WorkReportRow]) -> None:
         self.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
             self._populate_row(row_index, row)
-        self.blockSignals(False)
 
-    def checked_record_ids(self) -> list[int]:
-        record_ids = []
+    def checked_row_ids(self) -> list[int]:
+        result: list[int] = []
         for row_index in range(self.rowCount()):
             item = self.item(row_index, 0)
-            if item and item.checkState() is Qt.CheckState.Checked:
-                record_id = item.data(Qt.ItemDataRole.UserRole)
-                if record_id is not None:
-                    record_ids.append(int(record_id))
-        return record_ids
+            if item is not None and item.checkState() is Qt.CheckState.Checked:
+                result.append(int(item.data(Qt.ItemDataRole.UserRole)))
+        return result
 
-    def _populate_row(self, row_index: int, row: ReviewRow) -> None:
-        check_item = QTableWidgetItem()
-        check_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
-        check_item.setCheckState(Qt.CheckState.Unchecked)
-        check_item.setData(Qt.ItemDataRole.UserRole, row.record_id)
-        self.setItem(row_index, 0, check_item)
+    def _populate_row(self, row_index: int, row: WorkReportRow) -> None:
+        selector = QTableWidgetItem()
+        selector.setFlags(
+            Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
+        )
+        selector.setCheckState(Qt.CheckState.Unchecked)
+        selector.setData(Qt.ItemDataRole.UserRole, row.row_id)
+        self.setItem(row_index, 0, selector)
 
-        values = [
-            row.report_date,
-            row.author,
-            row.equipment_name,
-            row.tracking_no,
-            row.vendor_name,
-            row.actual_headcount,
-            row.daily_man_day,
-            row.cumulative_man_day,
-        ]
+        issue_text = (
+            ", ".join(issue.value for issue in row.issue_codes)
+            if row.issue_codes
+            else row.review_status.value
+        )
+        values = (
+            row.work_date.isoformat() if row.work_date else "확인 필요",
+            row.vendor_name or "",
+            row.tracking_no or "",
+            row.equipment_name or "",
+            row.business_team or "",
+            "" if row.actual_headcount is None else str(row.actual_headcount),
+            _display_decimal(row.per_person_man_day),
+            _display_decimal(row.reported_daily_man_day),
+            _display_decimal(row.calculated_daily_man_day),
+            _display_decimal(row.confirmed_daily_man_day),
+            _display_decimal(row.reported_cumulative_man_day),
+            _display_decimal(row.calculated_cumulative_man_day),
+            _display_decimal(row.confirmed_cumulative_man_day),
+            issue_text,
+        )
+        problem = bool(row.issue_codes) and not row.warning_confirmed
         for column, value in enumerate(values, start=1):
             item = QTableWidgetItem(value)
-            if column not in _EDITABLE_COLUMNS:
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            if row.status is ReviewStatus.EXCLUDED:
-                font = QFont()
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            if problem:
+                item.setBackground(_PROBLEM_BACKGROUND)
+            if not row.included or row.review_status is ReviewStatus.EXCLUDED:
+                font = QFont(item.font())
                 font.setStrikeOut(True)
                 item.setFont(font)
             self.setItem(row_index, column, item)
 
-        self.setCellWidget(row_index, 9, _confidence_bar(row.confidence))
-        self.setCellWidget(row_index, 10, _status_badge(row.status))
-        self.setCellWidget(row_index, 11, self._row_actions(row))
+        included = QTableWidgetItem("포함" if row.included else "제외")
+        included.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        included.setFlags(included.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        if not row.included:
+            font = QFont(included.font())
+            font.setStrikeOut(True)
+            included.setFont(font)
+        self.setItem(row_index, 15, included)
+        self.setCellWidget(row_index, 16, self._row_actions(row))
 
-    def _row_actions(self, row: ReviewRow) -> QWidget:
+    def _row_actions(self, row: WorkReportRow) -> QWidget:
         container = QWidget()
         layout = QHBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        original = QToolButton()
-        original.setText("원본")
-        original.setAutoRaise(True)
-        original.clicked.connect(
-            lambda _checked=False, mail_id=row.mail_entry_id: self.original_requested.emit(
-                mail_id
+        if row.mail_entry_id:
+            original = QToolButton()
+            original.setText("원본")
+            original.clicked.connect(
+                lambda _checked=False, entry_id=row.mail_entry_id: (
+                    self.original_requested.emit(entry_id)
+                )
+            )
+            layout.addWidget(original)
+        review = QToolButton()
+        review.setText("확인")
+        review.clicked.connect(
+            lambda _checked=False, row_id=row.row_id: (
+                self.review_requested.emit(row_id)
             )
         )
         exclude = QToolButton()
         exclude.setText("제외")
-        exclude.setAutoRaise(True)
         exclude.clicked.connect(
-            lambda _checked=False, record_id=row.record_id: self.exclude_requested.emit(
-                record_id
+            lambda _checked=False, row_id=row.row_id: (
+                self.exclude_requested.emit(row_id)
             )
         )
-        layout.addWidget(original)
+        layout.addWidget(review)
         layout.addWidget(exclude)
         return container
 
-    def _emit_edit(self, item: QTableWidgetItem) -> None:
-        field_name = _FIELD_BY_COLUMN.get(item.column())
-        if field_name is None:
-            return
-        identity = self.item(item.row(), 0)
-        if identity is None:
-            return
-        record_id = identity.data(Qt.ItemDataRole.UserRole)
-        if record_id is not None:
-            self.edit_requested.emit(int(record_id), field_name, item.text())
 
-
-# ponytail: 실 서비스 계층(Outlook 조회 -> 파싱 -> DB 저장) 연결 전까지 그리드 구성
-# 검증용 더미 데이터. main_window 가 이 함수를 호출해 초기 화면을 채운다.
-def dummy_rows() -> list[ReviewRow]:
-    return [
-        ReviewRow("2026-07-24", "홍길동", "ABC-200 #2", "XX260301", "협력사A", "2", "4.0", "18.5", 0.95, ReviewStatus.NORMAL),
-        ReviewRow("2026-07-24", "김철수", "모델X #7", "MK260307", "협력사A", "-", "-", "18.5", 0.55, ReviewStatus.CUMULATIVE_ONLY),
-        ReviewRow("2026-07-24", "이영희", "ABF Shaving #2", "ZZ260321", "-", "1", "-", "-", 0.40, ReviewStatus.VENDOR_UNCONFIRMED),
-        ReviewRow("2026-07-24", "박원준", "CO2 DRILLER #4", "XX260310", "훈원테크", "3", "총공수 55.5(모호)", "-", 0.30, ReviewStatus.NUMBER_UNPARSABLE),
-        ReviewRow("2026-07-24", "임현진", "모델Y #1", "ME260501", "협력사B", "8", "35.0", "35.0", 0.90, ReviewStatus.DUPLICATE_SUSPECTED),
-        ReviewRow("2026-07-24", "박기덕", "모델W", "ZZ260202", "협력사C", "5", "6.0", "40.0", 0.85, ReviewStatus.REVIEWED),
-        ReviewRow("2026-07-24", "김철수", "모델X #8", "ZZ260317", "협력사A", "4", "4.0", "9.0", 0.90, ReviewStatus.NORMAL),
-        ReviewRow("2026-07-23", "홍길동", "ABC-400 (제외됨)", "-", "-", "-", "-", "-", 0.20, ReviewStatus.EXCLUDED),
-    ]
+def _display_decimal(value: Decimal | None) -> str:
+    return "" if value is None else f"{value:.1f}"
