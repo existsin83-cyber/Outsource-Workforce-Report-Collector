@@ -64,6 +64,72 @@ def test_preview_blocks_structural_issues(tmp_path, issue):
     assert preview.blockers[0].code == issue.value
 
 
+def test_preview_explains_how_to_fix_unregistered_work_order(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    _create_ready_row(
+        repository,
+        vendor_name="업체A",
+        issue_codes=(WorkReportIssueCode.WORK_ORDER_UNREGISTERED,),
+    )
+
+    preview = FinalReportService(repository).preview(
+        date(2026, 7, 29), date(2026, 7, 29)
+    )
+
+    blocker = next(
+        item
+        for item in preview.blockers
+        if item.code == WorkReportIssueCode.WORK_ORDER_UNREGISTERED.value
+    )
+    assert "수주" in blocker.message
+    assert "설정" in blocker.message
+
+
+def test_preview_names_the_missing_confirmed_man_day_field(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    _create_ready_row(
+        repository,
+        vendor_name="업체A",
+        confirmed_daily_man_day=None,
+        confirmed_cumulative_man_day=Decimal("12.0"),
+    )
+
+    preview = FinalReportService(repository).preview(
+        date(2026, 7, 29), date(2026, 7, 29)
+    )
+
+    blocker = next(
+        item
+        for item in preview.blockers
+        if item.code == "CONFIRMED_MAN_DAY_MISSING"
+    )
+    assert "확정 투입" in blocker.message
+    assert "확정 누적" not in blocker.message
+
+
+def test_preview_names_each_missing_required_field(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    _create_ready_row(
+        repository,
+        vendor_name="업체A",
+        tracking_no="",
+        equipment_name=None,
+        business_team=None,
+    )
+
+    preview = FinalReportService(repository).preview(
+        date(2026, 7, 29), date(2026, 7, 29)
+    )
+
+    blocker = next(
+        item
+        for item in preview.blockers
+        if item.code == "REQUIRED_FIELD_MISSING"
+    )
+    assert "사업팀" in blocker.message
+    assert "Tracking No. 또는 장비명" in blocker.message
+
+
 def test_excluded_rows_do_not_block_finalization(tmp_path):
     repository = SQLiteRepository(tmp_path / "collector.db")
     _create_ready_row(
@@ -321,13 +387,15 @@ def _create_ready_row(
     *,
     vendor_name: str,
     tracking_no: str = "AB260101",
+    equipment_name: str | None = "장비 1",
+    business_team: str | None = "WA",
     actual_headcount: int = 2,
     night_headcount: int | None = 2,
     per_person_man_day: Decimal | None = Decimal("1.5"),
     issue_codes: tuple[WorkReportIssueCode, ...] = (),
     warning_confirmed: bool = True,
     confirmed_daily_man_day: Decimal | None = Decimal("3.0"),
-    confirmed_cumulative_man_day: Decimal = Decimal("12.0"),
+    confirmed_cumulative_man_day: Decimal | None = Decimal("12.0"),
     included: bool = True,
     review_status: ReviewStatus = ReviewStatus.REVIEWED,
 ):
@@ -336,8 +404,8 @@ def _create_ready_row(
         work_date_confirmed=True,
         vendor_name=vendor_name,
         tracking_no=tracking_no,
-        equipment_name="장비 1",
-        business_team="WA",
+        equipment_name=equipment_name,
+        business_team=business_team,
         actual_headcount=actual_headcount,
         night_headcount=night_headcount,
         per_person_man_day=per_person_man_day,

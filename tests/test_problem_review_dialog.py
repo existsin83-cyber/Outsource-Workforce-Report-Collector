@@ -3,6 +3,7 @@ from decimal import Decimal
 import pytest
 from PySide6.QtWidgets import QApplication
 
+from outsource_mail_collector.domain.work_report import WorkReportIssueCode
 from outsource_mail_collector.ui.problem_review_dialog import (
     ProblemReviewDialog,
 )
@@ -110,3 +111,36 @@ def test_duplicate_review_requires_explicit_decision():
         dialog.duplicate_decision.findData("REPLACE_NEW")
     )
     assert dialog.values()["duplicate_decision"] == "REPLACE_NEW"
+
+
+def test_review_dialog_explains_values_and_prefills_confirmed_candidates():
+    _app()
+    dialog = ProblemReviewDialog(
+        reported_daily=Decimal("3.0"),
+        calculated_daily=Decimal("3.0"),
+        reported_cumulative=Decimal("12.0"),
+        calculated_cumulative=Decimal("12.0"),
+        confirmed_daily=Decimal("3.0"),
+        confirmed_cumulative=Decimal("12.0"),
+        issue_codes=(WorkReportIssueCode.DAILY_MISMATCH,),
+    )
+
+    instruction = dialog.instruction_label.text()
+    assert "메일값" in instruction
+    assert "자동 계산값" in instruction
+    assert "Excel" in instruction
+    assert "당일 투입 공수 불일치" in dialog.issue_label.text()
+    assert dialog.confirmed_daily_edit.text() == "3.0"
+    assert dialog.confirmed_cumulative_edit.text() == "12.0"
+
+
+def test_invalid_accept_displays_specific_error_in_dialog():
+    _app()
+    dialog = ProblemReviewDialog()
+
+    dialog._accept_if_valid()
+
+    assert "확인 사유" in dialog.error_label.text()
+    dialog.note_edit.setText("원문 확인")
+    dialog._accept_if_valid()
+    assert "확정 투입" in dialog.error_label.text()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 
 from PySide6.QtCore import QDate
 from PySide6.QtWidgets import (
@@ -288,6 +289,17 @@ class MainWindow(QMainWindow):
             "calculated_daily": row.calculated_daily_man_day,
             "reported_cumulative": row.reported_cumulative_man_day,
             "calculated_cumulative": row.calculated_cumulative_man_day,
+            "confirmed_daily": _confirmed_candidate(
+                row.confirmed_daily_man_day,
+                row.reported_daily_man_day,
+                row.calculated_daily_man_day,
+            ),
+            "confirmed_cumulative": _confirmed_candidate(
+                row.confirmed_cumulative_man_day,
+                row.reported_cumulative_man_day,
+                row.calculated_cumulative_man_day,
+            ),
+            "issue_codes": row.issue_codes,
             "parent": self,
         }
         night_issue_codes = {
@@ -299,14 +311,6 @@ class MainWindow(QMainWindow):
             dialog_arguments["night_headcount"] = row.night_headcount
             dialog_arguments["headcount_correction"] = True
         dialog = ProblemReviewDialog(**dialog_arguments)
-        if row.confirmed_daily_man_day is not None:
-            dialog.confirmed_daily_edit.setText(
-                str(row.confirmed_daily_man_day)
-            )
-        if row.confirmed_cumulative_man_day is not None:
-            dialog.confirmed_cumulative_edit.setText(
-                str(row.confirmed_cumulative_man_day)
-            )
         if dialog.exec() == dialog.DialogCode.Accepted:
             try:
                 values = dialog.values()
@@ -423,3 +427,19 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _qdate_to_date(value: QDate) -> date:
         return date(value.year(), value.month(), value.day())
+
+
+def _confirmed_candidate(
+    confirmed: Decimal | None,
+    reported: Decimal | None,
+    calculated: Decimal | None,
+) -> Decimal | None:
+    if confirmed is not None:
+        return confirmed
+    if (
+        reported is not None
+        and calculated is not None
+        and reported == calculated
+    ):
+        return reported
+    return None

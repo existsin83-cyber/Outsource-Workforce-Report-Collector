@@ -1711,3 +1711,76 @@
 - 이번 수정은 이 기록과 함께 커밋하며, 최종 해시는 Git 로그와 완료 보고에서 확인.
 - 푸시는 수행하지 않음.
 - 기존 미추적 사용자 파일 `.superpowers/`, `AGENTS.md`, `CLAUDE.md`는 유지.
+
+## 2026-07-30 14:34:11 KST — 작업보고 화면 도움말·상세 오류·표 미리보기 개선
+
+### 세션 목표
+
+- 메인 작업행 목록의 공수 열과 작업 버튼 역할을 말풍선으로 설명.
+- 최종 확정 차단 알림에 문제 원인과 수정 방법을 구체적으로 표시.
+- 탭 기반 미리보기에서 누적 공수 값이 헤더와 어긋나 보이는 문제를 실제 표 위젯으로 해결.
+- 문제 행 확인 창에서 메일값·계산값·확정값의 관계와 입력 방법을 안내.
+
+### 주요 결정과 변경
+
+- 공수 계산·확정 의미는 변경하지 않고 UI 표현과 안내만 보강.
+- `work_report_guidance.py`에 모든 열과 현재 `WorkReportIssueCode`의 한국어 제목·설명·조치 매핑을 추가.
+- 메인 검토 표:
+  - 모든 헤더와 데이터 셀에 현재 값과 역할 말풍선 추가.
+  - 검증 상태의 영문 이슈 코드를 한국어 제목으로 표시.
+  - 원본·확인·제외 버튼에 동작과 구조 오류 선행 조치 설명 추가.
+- 최종 미리보기:
+  - `QPlainTextEdit` 탭 정렬을 10열 `QTableWidget`으로 교체.
+  - `야근 인원` 열을 포함하고 `3.0` 같은 누적값이 `누적 공수` 열 아래에 배치되도록 회귀 테스트 추가.
+  - 차단 메시지를 행별로 묶고 작업일·거래처·Tracking No.와 중복 제거된 해결 항목을 표시.
+- 최종 확정 서비스:
+  - 차단 코드는 유지하면서 각 구조 오류의 원인·조치를 구체화.
+  - 필수 누락 필드와 누락된 확정 투입/확정 누적을 이름으로 열거.
+- 문제 행 확인 창:
+  - 메일값·자동 계산값·Excel 반영용 확정값 안내 및 이슈별 조치 표시.
+  - 기존 확정값 또는 메일값과 계산값이 같은 안전한 후보를 자동 입력.
+  - 입력 오류를 창 안의 빨간 문구로 표시하고 필드명을 명시.
+  - 버튼 문구를 `확정값 저장`, `취소`로 변경.
+- Excel 직접 반영은 아직 미구현이므로 말풍선은 `전송`이 아니라 `Excel 반영에 사용할 값/표`로 표현.
+
+### 변경 파일
+
+- `src/outsource_mail_collector/application/final_report_service.py`
+- `src/outsource_mail_collector/ui/work_report_guidance.py` (신규)
+- `src/outsource_mail_collector/ui/review_grid.py`
+- `src/outsource_mail_collector/ui/final_report_dialog.py`
+- `src/outsource_mail_collector/ui/problem_review_dialog.py`
+- `src/outsource_mail_collector/ui/main_window.py`
+- `tests/test_work_report_guidance.py` (신규)
+- `tests/test_review_grid.py`
+- `tests/test_final_report_service.py`
+- `tests/test_final_report_dialog.py`
+- `tests/test_problem_review_dialog.py`
+- `docs/superpowers/plans/2026-07-30-work-report-ui-guidance.md` (신규)
+
+### TDD와 검토
+
+- RED:
+  - 최초 UI/서비스 회귀 묶음에서 `6 failed, 27 passed`.
+  - 최종 리뷰 보완 문구 테스트에서 `1 failed, 26 passed`.
+- GREEN:
+  - 관련 UI/서비스 통합 테스트 `52 passed`.
+  - 최종 리뷰 보완 테스트 `27 passed`.
+- 독립 최종 리뷰의 중요 지적 2건(Excel 전송 오해 문구, 필수 누락 필드 테스트)을 수정.
+- 범위 재검토에서 중요·경미 지적 4건 모두 해결 확인.
+
+### 최종 검증
+
+- 전체 테스트:
+  - `.venv\Scripts\python.exe -m pytest -q --basetemp <전용 경로> -p no:cacheprovider`
+  - `184 passed in 81.97s`.
+- `.venv\Scripts\python.exe -m compileall -q src tests`: 통과.
+- `git diff --check`: 통과(LF→CRLF 안내만 출력).
+- 실제 Outlook·Excel 연동: 안전 규칙에 따라 실행하지 않음.
+- 사용자의 실제 데스크톱 GUI 조작 검증: 실행하지 않음. 실행 중인 앱에는 재시작 후 변경이 반영됨.
+
+### 현재 상태와 경계
+
+- 커밋·푸시하지 않음.
+- 기존 미추적 `.claude/`, `.superpowers/`, `AGENTS.md`, `CLAUDE.md`는 보존.
+- 초기 기준선 확인 중 시스템 Python 의존성 누락과 pytest 임시 폴더 ACL 오류가 있었으며, `.venv`와 권한 허용 전용 `--basetemp` 경로로 최종 검증을 완료.

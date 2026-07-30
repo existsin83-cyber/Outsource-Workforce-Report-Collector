@@ -19,6 +19,12 @@ from PySide6.QtWidgets import (
 from outsource_mail_collector.application.models import WorkReportRow
 from outsource_mail_collector.domain.models import ReviewStatus
 from outsource_mail_collector.domain.work_report import man_day_basis
+from outsource_mail_collector.ui.work_report_guidance import (
+    COLUMN_HELP,
+    issue_action,
+    issue_detail,
+    issue_title,
+)
 
 
 _COLUMNS = (
@@ -45,6 +51,21 @@ _INCLUDED_COLUMN = _COLUMNS.index("포함")
 _ACTIONS_COLUMN = _COLUMNS.index("작업")
 _PROBLEM_BACKGROUND = QColor("#fff3e0")
 _PROBLEM_FOREGROUND = QColor("#4a1f00")
+_REVIEW_STATUS_LABELS = {
+    ReviewStatus.NORMAL: "정상",
+    ReviewStatus.EQUIPMENT_UNCONFIRMED: "장비명 미확인",
+    ReviewStatus.TRACKING_NO_UNCONFIRMED: "Tracking No. 미확인",
+    ReviewStatus.VENDOR_UNCONFIRMED: "업체명 미확인",
+    ReviewStatus.HEADCOUNT_MISSING: "실제 인원 미기재",
+    ReviewStatus.DAILY_MAN_DAY_MISSING: "당일 공수 미기재",
+    ReviewStatus.CUMULATIVE_ONLY: "누적 공수만 존재",
+    ReviewStatus.NUMBER_UNPARSABLE: "숫자 해석 불가",
+    ReviewStatus.DUPLICATE_SUSPECTED: "중복 의심",
+    ReviewStatus.REVISION_SUSPECTED: "수정 메일 가능성",
+    ReviewStatus.FORMAT_UNSUPPORTED: "형식 미지원",
+    ReviewStatus.REVIEWED: "검토 완료",
+    ReviewStatus.EXCLUDED: "반영 제외",
+}
 
 
 class ReviewGridWidget(QTableWidget):
@@ -61,6 +82,10 @@ class ReviewGridWidget(QTableWidget):
     ) -> None:
         super().__init__(0, len(_COLUMNS), parent)
         self.setHorizontalHeaderLabels(_COLUMNS)
+        for column, name in enumerate(_COLUMNS):
+            self.horizontalHeaderItem(column).setToolTip(
+                COLUMN_HELP.get(name, "행을 선택하는 확인란입니다.")
+            )
         self.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.ResizeToContents
         )
@@ -91,12 +116,13 @@ class ReviewGridWidget(QTableWidget):
         )
         selector.setCheckState(Qt.CheckState.Unchecked)
         selector.setData(Qt.ItemDataRole.UserRole, row.row_id)
+        selector.setToolTip("행 선택: 현재 표시값은 선택되지 않음입니다.")
         self.setItem(row_index, 0, selector)
 
         issue_text = (
-            ", ".join(issue.value for issue in row.issue_codes)
+            ", ".join(issue_title(issue) for issue in row.issue_codes)
             if row.issue_codes
-            else row.review_status.value
+            else _review_status_text(row.review_status)
         )
         values = (
             row.work_date.isoformat() if row.work_date else "확인 필요",
@@ -122,6 +148,9 @@ class ReviewGridWidget(QTableWidget):
             if problem:
                 item.setBackground(_PROBLEM_BACKGROUND)
                 item.setForeground(_PROBLEM_FOREGROUND)
+            item.setToolTip(
+                f"{COLUMN_HELP[_COLUMNS[column]]}\n현재 표시값: {value or '없음'}"
+            )
             if not row.included or row.review_status is ReviewStatus.EXCLUDED:
                 font = QFont(item.font())
                 font.setStrikeOut(True)
@@ -131,11 +160,23 @@ class ReviewGridWidget(QTableWidget):
         included = QTableWidgetItem("포함" if row.included else "제외")
         included.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         included.setFlags(included.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        included.setToolTip(
+            f"{COLUMN_HELP['포함']}\n현재 표시값: {included.text()}"
+        )
         if not row.included:
             font = QFont(included.font())
             font.setStrikeOut(True)
             included.setFont(font)
         self.setItem(row_index, _INCLUDED_COLUMN, included)
+        status = self.item(row_index, _COLUMNS.index("검증 상태"))
+        if status is not None and row.issue_codes:
+            status.setToolTip(
+                "\n".join(
+                    f"{issue_title(issue)}: {issue_detail(issue)} "
+                    f"조치: {issue_action(issue)}"
+                    for issue in row.issue_codes
+                )
+            )
         self.setCellWidget(
             row_index, _ACTIONS_COLUMN, self._row_actions(row)
         )
@@ -147,6 +188,7 @@ class ReviewGridWidget(QTableWidget):
         if row.mail_entry_id:
             original = QToolButton()
             original.setText("원본")
+            original.setToolTip("원본 메일: 해당 작업보고 메일을 엽니다.")
             original.clicked.connect(
                 lambda _checked=False, entry_id=row.mail_entry_id: (
                     self.original_requested.emit(entry_id)
@@ -155,6 +197,10 @@ class ReviewGridWidget(QTableWidget):
             layout.addWidget(original)
         review = QToolButton()
         review.setText("확인")
+        review.setToolTip(
+            "확인: 행을 검토하고 확정값을 입력합니다. "
+            "수주 미등록 같은 구조적 문제는 먼저 설정에서 수정해야 합니다."
+        )
         review.clicked.connect(
             lambda _checked=False, row_id=row.row_id: (
                 self.review_requested.emit(row_id)
@@ -162,6 +208,7 @@ class ReviewGridWidget(QTableWidget):
         )
         exclude = QToolButton()
         exclude.setText("제외")
+        exclude.setToolTip("제외: 이 행을 최종 확정 및 Excel 전송 대상에서 제외합니다.")
         exclude.clicked.connect(
             lambda _checked=False, row_id=row.row_id: (
                 self.exclude_requested.emit(row_id)
@@ -174,3 +221,7 @@ class ReviewGridWidget(QTableWidget):
 
 def _display_decimal(value: Decimal | None) -> str:
     return "" if value is None else f"{value:.1f}"
+
+
+def _review_status_text(status: ReviewStatus) -> str:
+    return _REVIEW_STATUS_LABELS.get(status, "확인 필요")

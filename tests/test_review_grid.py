@@ -10,7 +10,13 @@ from outsource_mail_collector.domain.work_report import (
     RowSource,
     WorkReportIssueCode,
 )
-from outsource_mail_collector.ui.review_grid import ReviewGridWidget
+from outsource_mail_collector.ui.review_grid import ReviewGridWidget, _review_status_text
+from outsource_mail_collector.ui.work_report_guidance import (
+    COLUMN_HELP,
+    issue_action,
+    issue_detail,
+    issue_title,
+)
 
 
 def _app() -> QApplication:
@@ -83,6 +89,65 @@ def test_review_grid_retains_row_ids_for_selected_rows():
     grid.item(0, 0).setCheckState(Qt.CheckState.Checked)
 
     assert grid.checked_row_ids() == [101]
+
+
+def test_review_grid_adds_column_and_value_tooltips():
+    _app()
+    grid = ReviewGridWidget([_row(101)])
+
+    assert all(
+        grid.horizontalHeaderItem(index).toolTip()
+        for index in range(grid.columnCount())
+    )
+    assert "자동 계산" in grid.horizontalHeaderItem(10).toolTip()
+    assert "이전 확정 누적" in grid.horizontalHeaderItem(13).toolTip()
+    assert "업체A" in grid.item(0, 2).toolTip()
+    assert "3.0" in grid.item(0, 10).toolTip()
+    assert COLUMN_HELP["거래처명"] in grid.item(0, 2).toolTip()
+    assert all(
+        grid.item(0, column).toolTip()
+        for column in range(1, 17)
+    )
+
+
+def test_validation_status_without_issues_uses_readable_korean_status():
+    _app()
+    grid = ReviewGridWidget([_row(101, review_status=ReviewStatus.REVIEWED)])
+
+    status = grid.item(0, 15)
+    assert status.text() == "검토 완료"
+    assert "ReviewStatus.REVIEWED" not in status.text()
+    assert _review_status_text(ReviewStatus.REVIEWED) == "검토 완료"
+
+
+def test_validation_status_uses_korean_issue_guidance():
+    _app()
+    issue = WorkReportIssueCode.WORK_ORDER_UNREGISTERED
+    grid = ReviewGridWidget([_row(101, issue_codes=(issue,), warning_confirmed=False)])
+
+    status = grid.item(0, 15)
+    assert status.text() == issue_title(issue)
+    assert issue_title(issue) in status.toolTip()
+    assert issue_detail(issue) in status.toolTip()
+    assert issue_action(issue) in status.toolTip()
+    assert "수주 미등록" in status.toolTip()
+    assert "설정" in status.toolTip()
+
+
+def test_review_grid_action_buttons_explain_their_effects():
+    _app()
+    grid = ReviewGridWidget([_row(101, mail_entry_id="ENTRY-1")])
+    buttons = {
+        button.text(): button
+        for button in grid.cellWidget(0, 17).findChildren(QToolButton)
+    }
+
+    assert buttons["원본"].toolTip()
+    assert "원본 메일" in buttons["원본"].toolTip()
+    assert "확인" in buttons["확인"].toolTip()
+    assert "확정값" in buttons["확인"].toolTip()
+    assert "설정" in buttons["확인"].toolTip()
+    assert buttons["제외"].toolTip()
 
 
 def _row(

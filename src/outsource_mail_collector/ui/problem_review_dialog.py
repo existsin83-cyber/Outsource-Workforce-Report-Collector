@@ -14,6 +14,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from outsource_mail_collector.domain.work_report import WorkReportIssueCode
+from outsource_mail_collector.ui.work_report_guidance import (
+    COLUMN_HELP,
+    issue_action,
+    issue_title,
+)
+
 
 class ProblemReviewDialog(QDialog):
     def __init__(
@@ -23,6 +30,9 @@ class ProblemReviewDialog(QDialog):
         calculated_daily: Decimal | None = None,
         reported_cumulative: Decimal | None = None,
         calculated_cumulative: Decimal | None = None,
+        confirmed_daily: Decimal | None = None,
+        confirmed_cumulative: Decimal | None = None,
+        issue_codes: tuple[WorkReportIssueCode, ...] = (),
         actual_headcount: int | None = None,
         night_headcount: int | None = None,
         headcount_correction: bool = False,
@@ -38,6 +48,23 @@ class ProblemReviewDialog(QDialog):
             or night_headcount is not None
         )
         layout = QFormLayout(self)
+        self.instruction_label = QLabel(
+            "메일값은 메일 본문에서 읽은 값, 자동 계산값은 인원·공수 "
+            "규칙으로 계산한 값입니다. 두 값을 비교해 Excel에 반영할 "
+            "확정값을 입력하세요."
+        )
+        self.instruction_label.setWordWrap(True)
+        layout.addRow(self.instruction_label)
+        self.issue_label = QLabel(
+            "\n".join(
+                f"{issue_title(issue)} — {issue_action(issue)}"
+                for issue in issue_codes
+            )
+        )
+        self.issue_label.setWordWrap(True)
+        self.issue_label.setStyleSheet("color:#e65100;")
+        self.issue_label.setVisible(bool(issue_codes))
+        layout.addRow(self.issue_label)
         self.reported_daily_label = QLabel(_display(reported_daily))
         self.calculated_daily_label = QLabel(_display(calculated_daily))
         self.reported_cumulative_label = QLabel(
@@ -46,8 +73,10 @@ class ProblemReviewDialog(QDialog):
         self.calculated_cumulative_label = QLabel(
             _display(calculated_cumulative)
         )
-        self.confirmed_daily_edit = QLineEdit()
-        self.confirmed_cumulative_edit = QLineEdit()
+        self.confirmed_daily_edit = QLineEdit(_display(confirmed_daily))
+        self.confirmed_cumulative_edit = QLineEdit(
+            _display(confirmed_cumulative)
+        )
         self.actual_headcount_edit = QLineEdit(_display_int(actual_headcount))
         self.night_headcount_edit = QLineEdit(_display_int(night_headcount))
         self.duplicate_decision = QComboBox()
@@ -56,6 +85,22 @@ class ProblemReviewDialog(QDialog):
         self.duplicate_decision.addItem("새 보고로 교체", "REPLACE_NEW")
         self.duplicate_decision.addItem("둘 다 제외", "EXCLUDE_BOTH")
         self.note_edit = QLineEdit()
+        self.confirmed_daily_edit.setPlaceholderText(
+            "메일값과 계산값을 비교해 확정 투입 입력"
+        )
+        self.confirmed_cumulative_edit.setPlaceholderText(
+            "메일값과 계산값을 비교해 확정 누적 입력"
+        )
+        self.note_edit.setPlaceholderText("확정 근거 또는 확인 내용을 입력")
+        for key, widget in (
+            ("메일 투입", self.reported_daily_label),
+            ("계산 투입", self.calculated_daily_label),
+            ("확정 투입", self.confirmed_daily_edit),
+            ("메일 누적", self.reported_cumulative_label),
+            ("계산 누적", self.calculated_cumulative_label),
+            ("확정 누적", self.confirmed_cumulative_edit),
+        ):
+            widget.setToolTip(COLUMN_HELP[key])
         if duplicate_mode:
             layout.addRow("중복 처리", self.duplicate_decision)
         else:
@@ -71,13 +116,24 @@ class ProblemReviewDialog(QDialog):
                 ("확정 누적", self.confirmed_cumulative_edit),
             ):
                 layout.addRow(label, widget)
+        self.note_edit.setToolTip(
+            "어떤 원문과 계산 근거로 확정했는지 기록합니다."
+        )
         layout.addRow("확인 사유", self.note_edit)
+        self.error_label = QLabel()
+        self.error_label.setWordWrap(True)
+        self.error_label.setStyleSheet("color:#c62828;")
+        layout.addRow(self.error_label)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.accepted.connect(self._accept_if_valid)
         buttons.rejected.connect(self.reject)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(
+            "확정값 저장"
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("취소")
         layout.addRow(buttons)
 
     def values(self) -> dict[str, object]:
@@ -94,10 +150,12 @@ class ProblemReviewDialog(QDialog):
             }
         values: dict[str, object] = {
             "confirmed_daily_man_day": _required_decimal(
-                self.confirmed_daily_edit.text()
+                self.confirmed_daily_edit.text(),
+                field_name="확정 투입",
             ),
             "confirmed_cumulative_man_day": _required_decimal(
-                self.confirmed_cumulative_edit.text()
+                self.confirmed_cumulative_edit.text(),
+                field_name="확정 누적",
             ),
             "resolution_note": note,
         }
@@ -121,8 +179,10 @@ class ProblemReviewDialog(QDialog):
     def _accept_if_valid(self) -> None:
         try:
             self.values()
-        except ValueError:
+        except ValueError as exc:
+            self.error_label.setText(str(exc))
             return
+        self.error_label.clear()
         self.accept()
 
 
@@ -148,11 +208,13 @@ def _required_headcount(raw_value: str, *, field_name: str) -> int:
     return int(value)
 
 
-def _required_decimal(raw_value: str) -> Decimal:
+def _required_decimal(raw_value: str, *, field_name: str) -> Decimal:
     try:
         value = Decimal(raw_value.strip())
     except InvalidOperation as exc:
-        raise ValueError("확정 공수를 숫자로 입력해 주세요.") from exc
+        raise ValueError(f"{field_name}을 숫자로 입력해 주세요.") from exc
     if not value.is_finite() or value < 0:
-        raise ValueError("확정 공수는 0 이상의 유한한 숫자여야 합니다.")
+        raise ValueError(
+            f"{field_name}은 0 이상의 유한한 숫자여야 합니다."
+        )
     return value

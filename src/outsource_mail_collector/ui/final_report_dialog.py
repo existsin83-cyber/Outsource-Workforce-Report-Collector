@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-from itertools import groupby
+from collections import defaultdict
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QDialog,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
-    QPlainTextEdit,
     QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -21,6 +24,7 @@ from outsource_mail_collector.application.models import (
     WorkReportRow,
 )
 from outsource_mail_collector.application.report_renderer import RenderedReport
+from outsource_mail_collector.ui.work_report_guidance import COLUMN_HELP
 
 
 _HEADERS = (
@@ -30,6 +34,7 @@ _HEADERS = (
     "장비명",
     "사업팀",
     "실제 작업인원",
+    "야근 인원",
     "인당 공수",
     "투입 공수",
     "누적 공수",
@@ -50,14 +55,17 @@ class FinalReportDialog(QDialog):
         self.rendered_report: RenderedReport | None = None
         layout = QVBoxLayout(self)
         self.blocker_label = QLabel(_blocker_text(preview))
+        self.blocker_label.setWordWrap(True)
+        self.blocker_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
         if preview.blockers:
             self.blocker_label.setStyleSheet(
                 "background:#ffebee;color:#c62828;padding:8px;"
             )
         layout.addWidget(self.blocker_label)
-        self.preview_text = QPlainTextEdit(_preview_text(preview.rows))
-        self.preview_text.setReadOnly(True)
-        layout.addWidget(self.preview_text)
+        self.preview_table = _preview_table(preview.rows)
+        layout.addWidget(self.preview_table)
         actions = QHBoxLayout()
         actions.addStretch()
         self.confirm_button = QPushButton("전체 최종 확인")
@@ -91,38 +99,69 @@ class FinalReportDialog(QDialog):
 def _blocker_text(preview: FinalReportPreview) -> str:
     if not preview.blockers:
         return "전체 행을 확인한 뒤 최종 확정해 주세요."
-    details = ", ".join(
-        f"행 {blocker.row_id}: {blocker.message}"
-        for blocker in preview.blockers
-    )
-    return f"최종 확정 불가 — {details}"
-
-
-def _preview_text(rows: tuple[WorkReportRow, ...]) -> str:
-    lines: list[str] = []
-    for _work_date, grouped in groupby(rows, key=lambda row: row.work_date):
-        lines.append("\t".join(_HEADERS))
-        for row in grouped:
-            lines.append(
-                "\t".join(
-                    (
-                        row.work_date.isoformat() if row.work_date else "",
-                        row.vendor_name or "",
-                        row.tracking_no or "",
-                        row.equipment_name or "",
-                        row.business_team or "",
-                        (
-                            ""
-                            if row.actual_headcount is None
-                            else str(row.actual_headcount)
-                        ),
-                        _decimal_text(row.per_person_man_day),
-                        _decimal_text(row.confirmed_daily_man_day),
-                        _decimal_text(row.confirmed_cumulative_man_day),
-                    )
+    rows_by_id = {row.row_id: row for row in preview.rows}
+    blockers_by_row: dict[int, list[str]] = defaultdict(list)
+    for blocker in preview.blockers:
+        if blocker.message not in blockers_by_row[blocker.row_id]:
+            blockers_by_row[blocker.row_id].append(blocker.message)
+    lines = ["최종 확정할 수 없습니다."]
+    for row_id, messages in blockers_by_row.items():
+        row = rows_by_id.get(row_id)
+        context = [f"행 {row_id}"]
+        if row is not None:
+            context.extend(
+                value
+                for value in (
+                    row.work_date.isoformat() if row.work_date else None,
+                    row.vendor_name,
+                    row.tracking_no,
                 )
+                if value
             )
+        lines.append(" / ".join(context))
+        lines.extend(f"• {message}" for message in messages)
     return "\n".join(lines)
+
+
+def _preview_table(rows: tuple[WorkReportRow, ...]) -> QTableWidget:
+    table = QTableWidget(len(rows), len(_HEADERS))
+    table.setHorizontalHeaderLabels(_HEADERS)
+    table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    table.verticalHeader().setVisible(False)
+    table.horizontalHeader().setSectionResizeMode(
+        QHeaderView.ResizeMode.ResizeToContents
+    )
+    table.horizontalHeader().setStretchLastSection(True)
+    for column, header in enumerate(_HEADERS):
+        help_key = {
+            "투입 공수": "확정 투입",
+            "누적 공수": "확정 누적",
+        }.get(header, header)
+        table.horizontalHeaderItem(column).setToolTip(
+            COLUMN_HELP.get(help_key, header)
+        )
+    for row_index, row in enumerate(rows):
+        values = (
+            row.work_date.isoformat() if row.work_date else "",
+            row.vendor_name or "",
+            row.tracking_no or "",
+            row.equipment_name or "",
+            row.business_team or "",
+            "" if row.actual_headcount is None else str(row.actual_headcount),
+            "" if row.night_headcount is None else str(row.night_headcount),
+            _decimal_text(row.per_person_man_day),
+            _decimal_text(row.confirmed_daily_man_day),
+            _decimal_text(row.confirmed_cumulative_man_day),
+        )
+        for column, value in enumerate(values):
+            item = QTableWidgetItem(value)
+            header_item = table.horizontalHeaderItem(column)
+            item.setToolTip(
+                f"{header_item.toolTip()}\n현재 표시값: {value or '없음'}"
+            )
+            table.setItem(row_index, column, item)
+    return table
 
 
 def _decimal_text(value: object | None) -> str:

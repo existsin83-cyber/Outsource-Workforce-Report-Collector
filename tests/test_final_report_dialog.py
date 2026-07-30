@@ -38,7 +38,7 @@ def test_blockers_disable_confirmation_and_identify_affected_row():
     assert dialog.copy_button.isEnabled() is False
 
 
-def test_clean_multi_date_preview_repeats_headers_and_enables_confirmation():
+def test_clean_multi_date_preview_uses_fixed_table_and_enables_confirmation():
     _app()
     preview = FinalReportPreview(
         date_from=date(2026, 7, 29),
@@ -53,8 +53,67 @@ def test_clean_multi_date_preview_repeats_headers_and_enables_confirmation():
     dialog = FinalReportDialog(preview)
 
     assert dialog.confirm_button.isEnabled() is True
-    assert dialog.preview_text.toPlainText().count("일자\t거래처명") == 2
+    assert dialog.preview_table.rowCount() == 2
+    assert dialog.preview_table.columnCount() == 10
+    headers = [
+        dialog.preview_table.horizontalHeaderItem(column).text()
+        for column in range(dialog.preview_table.columnCount())
+    ]
+    assert headers.count("일자") == 1
+    assert "야근 인원" in headers
     assert dialog.copy_button.isEnabled() is False
+
+
+def test_cumulative_value_is_under_cumulative_header():
+    _app()
+    row = _work_row(1)
+    row = WorkReportRow(
+        **{
+            **row.__dict__,
+            "confirmed_daily_man_day": Decimal("1.5"),
+            "confirmed_cumulative_man_day": Decimal("3.0"),
+        }
+    )
+    preview = FinalReportPreview(
+        date_from=date(2026, 7, 29),
+        date_to=date(2026, 7, 29),
+        rows=(row,),
+        blockers=(),
+    )
+
+    dialog = FinalReportDialog(preview)
+    cumulative_column = next(
+        column
+        for column in range(dialog.preview_table.columnCount())
+        if dialog.preview_table.horizontalHeaderItem(column).text()
+        == "누적 공수"
+    )
+
+    assert dialog.preview_table.item(0, cumulative_column).text() == "3.0"
+
+
+def test_blockers_are_grouped_once_per_row_with_row_context():
+    _app()
+    preview = FinalReportPreview(
+        date_from=date(2026, 7, 29),
+        date_to=date(2026, 7, 29),
+        rows=(_work_row(7),),
+        blockers=(
+            FinalizationBlocker(7, "ONE", "첫 번째 문제"),
+            FinalizationBlocker(7, "TWO", "두 번째 문제"),
+        ),
+    )
+
+    dialog = FinalReportDialog(preview)
+    text = dialog.blocker_label.text()
+
+    assert text.startswith("최종 확정할 수 없습니다.")
+    assert text.count("행 7") == 1
+    assert "2026-07-29" in text
+    assert "업체A" in text
+    assert "AB260101" in text
+    assert "• 첫 번째 문제" in text
+    assert "• 두 번째 문제" in text
 
 
 def test_copy_enables_only_after_confirmed_snapshot_and_can_be_invalidated():
@@ -116,6 +175,7 @@ def _work_row(
         equipment_name="장비 1",
         business_team="WA",
         actual_headcount=2,
+        night_headcount=1,
         per_person_man_day=Decimal("1.5"),
         reported_daily_man_day=Decimal("3.0"),
         calculated_daily_man_day=Decimal("3.0"),
