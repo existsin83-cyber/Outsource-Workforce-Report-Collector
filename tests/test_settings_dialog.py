@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 import pytest
-from PySide6.QtWidgets import QApplication, QMessageBox, QTableWidgetItem
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QMessageBox,
+    QTableWidgetItem,
+)
 
 from outsource_mail_collector.application.settings_service import SettingsService
 from outsource_mail_collector.infrastructure.db.repository import (
@@ -67,7 +73,7 @@ def test_settings_dialog_saves_work_order_mapping(tmp_path):
     dialog.work_order_table.setItem(row, 0, QTableWidgetItem("AB260101"))
     dialog.work_order_table.setItem(row, 1, QTableWidgetItem("장비 1"))
     dialog.work_order_table.cellWidget(row, 2).setCurrentIndex(0)
-    dialog.work_order_table.setItem(row, 3, QTableWidgetItem("PKG"))
+    dialog.work_order_table.cellWidget(row, 3).setCurrentText("PKG")
 
     dialog.save()
 
@@ -75,6 +81,130 @@ def test_settings_dialog_saves_work_order_mapping(tmp_path):
     assert mapping.normalized_tracking_no == "AB260101"
     assert mapping.vendor_id == vendor.vendor_id
     assert mapping.business_team == "PKG"
+
+
+def test_settings_dialog_saves_new_vendor_and_mapping_in_one_save(tmp_path):
+    _app()
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    dialog = SettingsDialog(SettingsService(repository, FakeOutlookAdapter()))
+
+    vendor_row = dialog.add_vendor_row()
+    dialog.vendor_table.setItem(vendor_row, 0, QTableWidgetItem("신규 업체"))
+    mapping_row = dialog.add_work_order_row()
+    dialog.work_order_table.setItem(
+        mapping_row, 0, QTableWidgetItem("AB260201")
+    )
+    dialog.work_order_table.setItem(mapping_row, 1, QTableWidgetItem("장비 2"))
+    vendor_combo = dialog.work_order_table.cellWidget(mapping_row, 2)
+    team_combo = dialog.work_order_table.cellWidget(mapping_row, 3)
+
+    assert isinstance(vendor_combo, QComboBox)
+    assert vendor_combo.findText("신규 업체") >= 0
+    vendor_combo.setCurrentText("신규 업체")
+    assert isinstance(team_combo, QComboBox)
+    team_combo.setCurrentText("WA")
+
+    dialog.save()
+
+    vendor = repository.list_vendors()[0]
+    mapping = repository.list_work_order_mappings()[0]
+    assert vendor.canonical_name == "신규 업체"
+    assert mapping.vendor_id == vendor.vendor_id
+    assert mapping.business_team == "WA"
+
+
+def test_incomplete_work_order_does_not_block_vendor_save(tmp_path):
+    _app()
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    dialog = SettingsDialog(SettingsService(repository, FakeOutlookAdapter()))
+
+    vendor_row = dialog.add_vendor_row()
+    dialog.vendor_table.setItem(vendor_row, 0, QTableWidgetItem("신규 업체"))
+    mapping_row = dialog.add_work_order_row()
+    dialog.work_order_table.setItem(
+        mapping_row, 0, QTableWidgetItem("AB260202")
+    )
+
+    incomplete_rows = dialog.save()
+
+    assert incomplete_rows == [mapping_row]
+    assert repository.list_vendors()[0].canonical_name == "신규 업체"
+    assert repository.list_work_order_mappings() == []
+
+
+def test_incomplete_work_order_message_names_missing_vendor(tmp_path, monkeypatch):
+    _app()
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    dialog = SettingsDialog(SettingsService(repository, FakeOutlookAdapter()))
+    mapping_row = dialog.add_work_order_row()
+    dialog.work_order_table.setItem(
+        mapping_row, 0, QTableWidgetItem("AB260203")
+    )
+    dialog.work_order_table.setItem(mapping_row, 1, QTableWidgetItem("장비 3"))
+    dialog.work_order_table.cellWidget(mapping_row, 3).setCurrentText("PKG")
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, message: warnings.append(message),
+    )
+
+    dialog._save_and_accept()
+
+    assert len(warnings) == 1
+    assert "1행: 업체가 선택되지 않았습니다." in warnings[0]
+    assert dialog.result() != dialog.DialogCode.Accepted
+
+
+def test_settings_tables_use_visible_active_checkboxes(tmp_path):
+    _app()
+    dialog = SettingsDialog(
+        SettingsService(
+            SQLiteRepository(tmp_path / "collector.db"), FakeOutlookAdapter()
+        )
+    )
+
+    employee_row = dialog.add_employee_row()
+    vendor_row = dialog.add_vendor_row()
+    mapping_row = dialog.add_work_order_row()
+
+    for table, row, column in (
+        (dialog.employee_table, employee_row, 3),
+        (dialog.vendor_table, vendor_row, 2),
+        (dialog.work_order_table, mapping_row, 4),
+    ):
+        checkbox = table.cellWidget(row, column)
+        assert isinstance(checkbox, QCheckBox)
+        assert checkbox.isChecked()
+        checkbox.setChecked(False)
+        assert not checkbox.isChecked()
+
+
+def test_business_team_combo_has_allowed_values_and_restores_saved_value(tmp_path):
+    _app()
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    vendor = repository.save_vendor(None, "협력사", [], True)
+    repository.save_work_order_mapping(
+        None, "AB260101", "장비 1", vendor.vendor_id, "광학영업", True
+    )
+
+    dialog = SettingsDialog(SettingsService(repository, FakeOutlookAdapter()))
+    combo = dialog.work_order_table.cellWidget(0, 3)
+
+    assert isinstance(combo, QComboBox)
+    assert [combo.itemText(index) for index in range(combo.count())] == [
+        "MARKER",
+        "CSM",
+        "GROOVING",
+        "WA",
+        "PKG",
+        "PCB",
+        "DISPLAY",
+        "MACRO",
+        "광학영업",
+        "LDM",
+    ]
+    assert combo.currentText() == "광학영업"
 
 
 def test_settings_dialog_preserves_inactive_mapping_vendor_on_save(tmp_path):
@@ -96,6 +226,10 @@ def test_settings_dialog_preserves_inactive_mapping_vendor_on_save(tmp_path):
     dialog.save()
 
     assert repository.list_work_order_mappings()[0].vendor_id == mapping.vendor_id
+    assert (
+        dialog.work_order_table.cellWidget(0, 2).currentText()
+        == "기존 업체 (비활성)"
+    )
 
 
 def test_settings_dialog_handles_deleting_referenced_vendor_without_mutation(
@@ -140,7 +274,7 @@ def test_settings_dialog_rejects_new_mapping_to_vendor_deleted_in_same_save(
     row = dialog.add_work_order_row()
     dialog.work_order_table.setItem(row, 0, QTableWidgetItem("AB260102"))
     dialog.work_order_table.setItem(row, 1, QTableWidgetItem("장비 2"))
-    dialog.work_order_table.setItem(row, 3, QTableWidgetItem("PKG"))
+    dialog.work_order_table.cellWidget(row, 3).setCurrentText("PKG")
     warnings: list[str] = []
     monkeypatch.setattr(
         QMessageBox, "warning", lambda _parent, _title, message: warnings.append(message)
@@ -247,9 +381,7 @@ def test_settings_save_rolls_back_late_duplicate_and_pending_vendor_delete(
     dialog.work_order_table.setItem(
         duplicate_row, 1, QTableWidgetItem("장비 중복")
     )
-    dialog.work_order_table.setItem(
-        duplicate_row, 3, QTableWidgetItem("DUP")
-    )
+    dialog.work_order_table.cellWidget(duplicate_row, 3).setCurrentText("PKG")
     vendor_combo = dialog.work_order_table.cellWidget(duplicate_row, 2)
     vendor_combo.setCurrentIndex(vendor_combo.findData(retained_vendor.vendor_id))
 

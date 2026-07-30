@@ -44,6 +44,7 @@ _COLUMNS = (
 _INCLUDED_COLUMN = _COLUMNS.index("포함")
 _ACTIONS_COLUMN = _COLUMNS.index("작업")
 _PROBLEM_BACKGROUND = QColor("#fff3e0")
+_PROBLEM_FOREGROUND = QColor("#4a1f00")
 
 
 class ReviewGridWidget(QTableWidget):
@@ -120,6 +121,7 @@ class ReviewGridWidget(QTableWidget):
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             if problem:
                 item.setBackground(_PROBLEM_BACKGROUND)
+                item.setForeground(_PROBLEM_FOREGROUND)
             if not row.included or row.review_status is ReviewStatus.EXCLUDED:
                 font = QFont(item.font())
                 font.setStrikeOut(True)

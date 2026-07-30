@@ -56,6 +56,8 @@ def test_review_grid_shows_compilation_columns_and_problem_styling():
     assert grid.horizontalHeaderItem(8).text() == "인당 공수"
     assert grid.item(0, 8).text() == "혼합"
     assert grid.item(1, 1).background().color().name() == "#fff3e0"
+    assert grid.item(1, 1).foreground().color().name() == "#4a1f00"
+    assert grid.item(1, 15).foreground().color().name() == "#4a1f00"
     assert grid.item(2, 1).font().strikeOut()
 
 

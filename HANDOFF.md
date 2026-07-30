@@ -56,6 +56,168 @@
 
 ## 세션 기록
 
+## 2026-07-30 11:18:00 KST — 커밋 및 애플리케이션 실행
+
+### 세션 정보
+
+- 작업 주체: Codex
+- 작업 디렉터리: `D:\My_Work\Outsource Workforce Report Collector`
+- Git 브랜치: `master`
+- 기준 커밋: `70a710a` (`fix: complete settings UI bug changes`)
+
+### 수행 내용
+
+- 전체 테스트와 정적 검증을 다시 실행했다.
+- 변경 산출물을 `70a710a`로 커밋했다.
+- `.venv\Scripts\python.exe -m outsource_mail_collector.app`를 실행했다.
+
+### 검증 결과
+
+- `pytest`: `167 passed in 81.92s`
+- `compileall`: 성공
+- `git diff --check`: 성공
+- 애플리케이션 프로세스: PID `44672`, 실행 중이며 응답 상태 확인
+
+### 경계 및 미실행 항목
+
+- `AGENTS.md`, `CLAUDE.md`, `.superpowers/`는 사용자 지침/도구 메타데이터로 커밋에서 제외했다.
+- 애플리케이션 시작만 확인했으며 Outlook 수집, Excel 쓰기, 실제 사용자 GUI 시나리오는 실행하지 않았다.
+- 원격 푸시는 수행하지 않았다.
+
+---
+
+## 2026-07-30 11:04:52 KST — UI 버그 및 설정 흐름 수정
+
+### 세션 정보
+
+- 작성 주체: Codex 세션
+- 세션 ID: 확인 불가
+- 작업 디렉터리: `D:\My_Work\Outsource Workforce Report Collector`
+- Git 브랜치: `master`
+- 기준 커밋: `99f0756`
+
+### 1. 세션 목표
+
+- `docs/2026-07-30-ui-bugs-and-change-list.md`의 업체·수주 동시 등록,
+  활성 체크박스, 사업팀 드롭다운, 검토표 오류 대비 문제를 수정한다.
+- 실제 Outlook, Excel 및 live collector DB에는 접근하지 않는다.
+
+### 2. 시작 시점 상태
+
+- 기준 커밋은 `99f0756`, 브랜치는 `master`였다.
+- `.superpowers/`, `AGENTS.md`, `CLAUDE.md`,
+  `docs/2026-07-30-ui-bugs-and-change-list.md`가 기존 미추적 파일이었다.
+- 위 기존 파일을 되돌리거나 이번 기능 코드의 기존 상태로 간주하지 않았다.
+
+### 3. 핵심 결정
+
+- 새 업체는 저장 전에도 수주 업체 드롭다운에서 이름 기반 임시 참조로 선택할 수
+  있게 하고, 단일 SQLite 트랜잭션에서 업체를 먼저 저장한 뒤 확보한 ID로 수주를
+  저장한다.
+- 새 미완성 수주 행은 다른 설정 저장을 막지 않고 저장 대상에서 제외하며,
+  설정창을 닫지 않은 채 행별 누락 원인을 안내한다.
+- 수주 삭제와 미완성 수주 행이 동시에 있으면 기존 수주 손실을 막기 위해 전체
+  저장을 차단한다.
+- 활성 표시는 테마에서 명확히 보이는 `QCheckBox` 셀 위젯으로 통일한다.
+- 신규 수주의 사업팀은 승인된 10개 목록만 선택하며, 과거 목록 외 저장값은
+  재오픈 시 손실 없이 표시한다.
+- 오류 행은 밝은 배경과 명시적인 어두운 전경색을 함께 설정한다.
+
+### 4. 수행 내용
+
+- 신규 업체와 신규 수주를 같은 설정창에서 한 번에 저장하는 흐름을 구현했다.
+- 업체명·활성 변경 시 모든 수주 업체 드롭다운을 즉시 갱신한다.
+- 미완성 수주 행을 분리하고 수주번호, 장비명, 업체, 사업팀별 누락 이유를
+  메시지에 표시한다.
+- 담당자·업체·수주 활성 상태를 체크박스 셀 위젯으로 변경했다.
+- 사업팀 선택과 기존 저장값 복원을 콤보박스로 구현했다.
+- 검토표 문제 행의 글자 대비를 보강했다.
+- 익명·격리 테스트 DB와 가짜 Outlook adapter로 다크 테마 GUI 렌더를 생성해
+  업체·사업팀 드롭다운, 활성 체크박스, 오류 행 대비를 육안 확인했다.
+
+### 5. 변경 파일
+
+기능 코드:
+
+- `src/outsource_mail_collector/ui/settings_dialog.py`
+- `src/outsource_mail_collector/ui/review_grid.py`
+
+테스트:
+
+- `tests/test_settings_dialog.py`
+- `tests/test_review_grid.py`
+
+문서:
+
+- `docs/2026-07-30-ui-bugs-and-change-list.md`
+- `HANDOFF.md`
+
+### 6. 검증 결과
+
+- TDD RED:
+  - 최초 집중 실행: `5 failed, 15 passed`
+  - 누락 업체 원인 메시지: `1 failed`
+  - 비활성 업체 표시 중복 회귀: `1 failed`
+- 집중 테스트:
+  - `tests/test_settings_dialog.py`, `tests/test_review_grid.py`
+  - `QT_QPA_PLATFORM=offscreen`, 저장소 내부 `--basetemp`,
+    `-p no:cacheprovider`
+  - 결과: `21 passed in 16.73s`
+- 전체 테스트:
+  - `QT_QPA_PLATFORM=offscreen`, 저장소 내부 `--basetemp`,
+    `-p no:cacheprovider`
+  - 결과: `167 passed in 76.65s`
+- `git diff --check`: exit code 0, LF-to-CRLF 안내 경고만 출력
+- 격리 GUI 렌더:
+  - `D:\tmp\collector-ui-settings-work-order-20260730.png`
+  - `D:\tmp\collector-ui-review-error-20260730.png`
+  - 수주 업체·사업팀 드롭다운, 활성 체크박스, 오류 행의 밝은 배경과 어두운
+    글자 대비를 확인했다.
+
+### 7. 실패 및 미확인 사항
+
+- 실제 사용자 데스크톱에서 대화형 GUI 확인: 미실행.
+- 격리 렌더 환경은 Qt 글꼴 디렉터리가 없어 일부 한글이 `?`로 표시됐으며,
+  위젯 배치·선택 UI·색 대비 확인에는 영향을 주지 않았다.
+- 실제 Outlook 수집/Inspector: 실행하지 않음.
+- 실제 Excel 접근·내보내기: 실행하지 않음.
+- live collector DB 접근·변경: 실행하지 않음.
+
+### 8. 현재 상태
+
+- 코드 구현 및 자동 회귀: 완료.
+- 격리 GUI 렌더 검토: 완료.
+- 실제 사용자 데스크톱 GUI 확인: 미완료.
+- 전체 상태: 부분 완료.
+
+### 9. 다음 세션 실행 순서
+
+1. 실제 사용자 데스크톱에서 설정창을 열어 업체와 수주를 한 번의 Save로
+   저장하고, 미완성 수주 안내가 행별 원인으로 표시되는지 확인한다.
+2. 업체·수주 활성 체크박스와 사업팀 전체 목록·재오픈 복원을 확인한다.
+3. 다크 테마 메인 검토표의 오류 행 대비를 확인한다.
+4. 확인 후 `docs/2026-07-30-ui-bugs-and-change-list.md`의 기능 항목과 실제 GUI
+   검증 체크박스를 완료 처리한다.
+
+### 10. 위험 및 주의사항
+
+- 실제 Outlook·Excel·live DB 검증으로 자동 확대하지 않는다.
+- 미완성 신규 수주 행은 DB에 저장되지 않고 설정창에 남는다.
+- 수주 삭제가 대기 중이면 미완성 행을 허용하지 않아 기존 매핑의 의도치 않은
+  삭제를 방지한다.
+- 기존 목록 외 사업팀 값은 자동 변경하거나 삭제하지 않는다.
+
+### 11. Git 및 변경 경계
+
+- 커밋: 하지 않음.
+- 푸시: 하지 않음.
+- 브랜치 변경/PR: 하지 않음.
+- 기존 사용자 및 이전 세션 변경은 보존함.
+
+### 12. 이전 기록 정정
+
+- 없음.
+
 ## 2026-07-29 21:55:31 KST — 최종 코드 리뷰 중요 발견사항 수정
 
 ### 세션 정보
