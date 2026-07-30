@@ -1667,3 +1667,47 @@
 
 - 수정 사항은 아직 커밋하지 않음.
 - 기존 미추적 사용자 파일 `.superpowers/`, `AGENTS.md`, `CLAUDE.md`는 유지.
+
+## 2026-07-30 12:27:32 KST — 설정 추가 버튼 실제 클릭 경로 수정
+
+### 세션 목표
+
+- 사용자 제공 화면에서 새 업체 행의 활성 체크박스와 새 수주 행의 업체·사업팀 드롭다운 및 활성 체크박스가 생성되지 않는 문제를 실제 GUI 기준으로 수정.
+
+### 원인과 결정
+
+- `QPushButton.clicked(bool)`를 `add_employee_row(employee=None)`, `add_vendor_row(vendor=None)`, `add_work_order_row(mapping=None)`에 직접 연결해 클릭 시 `False`가 엔티티 객체 인수로 전달됨.
+- 새 행 삽입 직후 각각 `False.employee_id`, `False.vendor_id`, `False.mapping_id` 접근에서 예외가 발생해 내장 위젯 설치 전에 함수가 중단됨.
+- 크기나 스타일 문제가 아니므로, 세 추가 버튼의 신호 연결에서 `bool` 인수를 버리고 인수 없이 행 추가 메서드를 호출하도록 수정.
+
+### 변경 파일
+
+- `src/outsource_mail_collector/ui/settings_dialog.py`
+  - 담당자·업체·수주 추가 버튼의 `clicked(bool)` 인수를 차단.
+- `tests/test_settings_dialog.py`
+  - 메서드 직접 호출이 아니라 실제 추가 버튼을 클릭해 각 행의 내장 위젯 생성을 확인하는 회귀 테스트 추가.
+- `docs/2026-07-30-ui-bugs-and-change-list.md`
+  - 실제 GUI에서 확인한 업체 드롭다운, 활성 체크박스, 사업팀 드롭다운 항목과 작업 기록 갱신.
+
+### 검증
+
+- RED: 새 회귀 테스트에서 세 버튼 모두 `AttributeError`를 재현하고 내장 위젯 부재로 실패.
+- GREEN: 대상 테스트 `1 passed`.
+- 설정 화면 테스트: `19 passed`.
+- 전체 테스트: `168 passed in 86.67s`.
+- `python -m compileall -q src tests`: 통과.
+- `git diff --check`: 통과(LF→CRLF 안내만 출력).
+- 실제 사용자 데스크톱 GUI:
+  - 새 업체 행의 기본 체크된 `활성` 체크박스 확인.
+  - 새 수주 행의 업체·사업팀 드롭다운 화살표와 기본 체크된 `활성` 체크박스 확인.
+  - 업체 드롭다운에서 저장된 활성 업체 `SH 오토메이션` 확인.
+  - 사업팀 드롭다운에서 허용값 10개 전체 확인.
+  - 검증용 미완성 행은 Cancel로 폐기하여 DB에 저장하지 않음.
+
+### 현재 상태와 경계
+
+- 애플리케이션 재실행 완료: 가상환경 런처 PID `65060`, 실제 GUI PID `29836`, 응답 정상.
+- 실제 Outlook·Excel 연동은 실행하지 않음.
+- 이번 수정은 이 기록과 함께 커밋하며, 최종 해시는 Git 로그와 완료 보고에서 확인.
+- 푸시는 수행하지 않음.
+- 기존 미추적 사용자 파일 `.superpowers/`, `AGENTS.md`, `CLAUDE.md`는 유지.

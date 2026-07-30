@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QMessageBox,
+    QPushButton,
     QTableWidgetItem,
 )
 
@@ -180,6 +181,26 @@ def test_settings_tables_use_visible_active_checkboxes(tmp_path):
         assert checkbox.isChecked()
         checkbox.setChecked(False)
         assert not checkbox.isChecked()
+
+
+def test_add_buttons_create_rows_with_embedded_controls(tmp_path):
+    _app()
+    dialog = SettingsDialog(
+        SettingsService(
+            SQLiteRepository(tmp_path / "collector.db"), FakeOutlookAdapter()
+        )
+    )
+    buttons = {button.text(): button for button in dialog.findChildren(QPushButton)}
+
+    buttons["담당자 추가"].click()
+    buttons["업체 추가"].click()
+    buttons["수주 추가"].click()
+
+    assert isinstance(dialog.employee_table.cellWidget(0, 3), QCheckBox)
+    assert isinstance(dialog.vendor_table.cellWidget(0, 2), QCheckBox)
+    assert isinstance(dialog.work_order_table.cellWidget(0, 2), QComboBox)
+    assert isinstance(dialog.work_order_table.cellWidget(0, 3), QComboBox)
+    assert isinstance(dialog.work_order_table.cellWidget(0, 4), QCheckBox)
 
 
 def test_business_team_combo_has_allowed_values_and_restores_saved_value(tmp_path):
