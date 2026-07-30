@@ -175,6 +175,8 @@ def test_settings_tables_use_visible_active_checkboxes(tmp_path):
     ):
         checkbox = table.cellWidget(row, column)
         assert isinstance(checkbox, QCheckBox)
+        assert checkbox.text() == "활성"
+        assert checkbox.minimumWidth() >= 56
         assert checkbox.isChecked()
         checkbox.setChecked(False)
         assert not checkbox.isChecked()
@@ -192,6 +194,11 @@ def test_business_team_combo_has_allowed_values_and_restores_saved_value(tmp_pat
     combo = dialog.work_order_table.cellWidget(0, 3)
 
     assert isinstance(combo, QComboBox)
+    vendor_combo = dialog.work_order_table.cellWidget(0, 2)
+    assert isinstance(vendor_combo, QComboBox)
+    assert vendor_combo.minimumWidth() >= 140
+    assert combo.minimumWidth() >= 120
+    assert dialog.work_order_table.rowHeight(0) >= 28
     assert [combo.itemText(index) for index in range(combo.count())] == [
         "MARKER",
         "CSM",

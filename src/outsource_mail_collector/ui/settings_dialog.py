@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -126,6 +127,7 @@ class SettingsDialog(QDialog):
         self.employee_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
         )
+        _configure_settings_table(self.employee_table, [150, 230, 260, 78])
         layout.addWidget(self.employee_table)
         controls = QHBoxLayout()
         add_button = QPushButton("담당자 추가")
@@ -148,6 +150,7 @@ class SettingsDialog(QDialog):
         self.vendor_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
         )
+        _configure_settings_table(self.vendor_table, [220, 360, 78])
         self.vendor_table.itemChanged.connect(
             lambda _item: self._refresh_work_order_vendor_combos()
         )
@@ -173,6 +176,7 @@ class SettingsDialog(QDialog):
         self.work_order_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
         )
+        _configure_settings_table(self.work_order_table, [140, 180, 160, 130, 78])
         layout.addWidget(self.work_order_table)
         controls = QHBoxLayout()
         add_button = QPushButton("수주 추가")
@@ -290,6 +294,7 @@ class SettingsDialog(QDialog):
             self.work_order_table.setItem(row, column, item)
 
         vendor_combo = QComboBox()
+        vendor_combo.setMinimumWidth(140)
         self._populate_vendor_combo(vendor_combo)
         if mapping is not None:
             vendor_index = vendor_combo.findData(mapping.vendor_id)
@@ -304,6 +309,7 @@ class SettingsDialog(QDialog):
         self.work_order_table.setCellWidget(row, 2, vendor_combo)
 
         team_combo = QComboBox()
+        team_combo.setMinimumWidth(120)
         team_combo.addItems(_BUSINESS_TEAMS)
         if mapping is None:
             team_combo.setCurrentIndex(-1)
@@ -665,9 +671,19 @@ class SettingsDialog(QDialog):
 
 
 def _check_box(checked: bool) -> QCheckBox:
-    checkbox = QCheckBox()
+    checkbox = QCheckBox("활성")
+    checkbox.setMinimumWidth(56)
     checkbox.setChecked(checked)
     return checkbox
+
+
+def _configure_settings_table(table: QTableWidget, widths: list[int]) -> None:
+    """Keep embedded controls visible on both compact and native Windows styles."""
+    table.verticalHeader().setDefaultSectionSize(30)
+    table.verticalHeader().setMinimumSectionSize(30)
+    table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+    for column, width in enumerate(widths):
+        table.setColumnWidth(column, width)
 
 
 def _is_checked(table: QTableWidget, row: int, column: int) -> bool:
