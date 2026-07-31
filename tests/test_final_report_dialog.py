@@ -38,7 +38,7 @@ def test_blockers_disable_confirmation_and_identify_affected_row():
     assert dialog.copy_button.isEnabled() is False
 
 
-def test_clean_multi_date_preview_uses_fixed_table_and_enables_confirmation():
+def test_clean_multi_date_preview_uses_nine_column_table_and_enables_confirmation():
     _app()
     preview = FinalReportPreview(
         date_from=date(2026, 7, 29),
@@ -54,13 +54,23 @@ def test_clean_multi_date_preview_uses_fixed_table_and_enables_confirmation():
 
     assert dialog.confirm_button.isEnabled() is True
     assert dialog.preview_table.rowCount() == 2
-    assert dialog.preview_table.columnCount() == 10
+    assert dialog.preview_table.columnCount() == 9
     headers = [
         dialog.preview_table.horizontalHeaderItem(column).text()
         for column in range(dialog.preview_table.columnCount())
     ]
     assert headers.count("일자") == 1
-    assert "야근 인원" in headers
+    assert headers == [
+        "일자",
+        "거래처명",
+        "Tracking No.",
+        "장비명",
+        "사업팀",
+        "실제 작업인원",
+        "인당 공수",
+        "투입 공수",
+        "누적 공수",
+    ]
     assert dialog.copy_button.isEnabled() is False
 
 
@@ -90,6 +100,27 @@ def test_cumulative_value_is_under_cumulative_header():
     )
 
     assert dialog.preview_table.item(0, cumulative_column).text() == "3.0"
+
+
+def test_final_preview_shows_mixed_basis_without_night_column():
+    _app()
+    row = _work_row(1)
+    preview = FinalReportPreview(
+        date_from=date(2026, 7, 29),
+        date_to=date(2026, 7, 29),
+        rows=(row,),
+        blockers=(),
+    )
+
+    dialog = FinalReportDialog(preview)
+    headers = [
+        dialog.preview_table.horizontalHeaderItem(column).text()
+        for column in range(dialog.preview_table.columnCount())
+    ]
+
+    assert "야근 인원" not in headers
+    assert dialog.preview_table.item(0, headers.index("인당 공수")).text() == "혼합"
+    assert dialog.preview_table.item(0, headers.index("투입 공수")).text() == "3.0"
 
 
 def test_blockers_are_grouped_once_per_row_with_row_context():

@@ -56,6 +56,135 @@
 
 ## 세션 기록
 
+## 2026-07-31 09:53:15 KST — Tracking No. 누적 대시보드 문서화
+
+### 세션 정보
+
+- 작업 주체: Codex Task 4 문서화 서브태스크
+- 세션 ID: 확인 불가
+- 작업 디렉터리: `D:\My_Work\Outsource Workforce Report Collector\.worktrees\tracking-dashboard`
+- Git 브랜치: `feat/tracking-dashboard-cumulative-work`
+- 기준 커밋: `dee2b7a`
+
+### 1. 세션 목표
+
+- 구현·검토된 Tracking No. 누적 대시보드 계약을 전용 설계 문서와 기존 요구사항·설계
+  문서에 반영한다.
+- 실제 Outlook, Excel, live DB, 사용자 GUI에는 접근하지 않고 코드·테스트·Git 이력도
+  변경하지 않는다.
+
+### 2. 시작 시점 상태
+
+- Task 1~3 구현과 테스트 변경이 이미 있는 dirty worktree였으며, 이를 보존했다.
+- Task 1~3 보고서의 최신 구현 계약과 TDD/회귀 근거를 문서화 근거로 사용했다.
+- Task 3의 최신 전체 자동 회귀 결과는 `231 passed in 138.06s`였으며, 문서 변경 후
+  부모 작업이 새 전체 suite와 정적 검증을 다시 실행했다.
+
+### 3. 핵심 결정
+
+- 원본 메일 행 검토 화면과 별도 Tracking No. 대시보드를 분리한다. 대시보드의 평생
+  누적 식별자는 정규화 Tracking No. 하나이며 업체·장비명은 보완 키가 아니다.
+- 최초 누적은 기준 적용 종료일과 값을 명시적으로 저장한다. 이후 활성 행은 시간순으로
+  계산하고 메일 누적/계산 누적 불일치는 최종화를 차단한다.
+- 같은 작업일·Tracking No.의 활성 행은 하나의 당일 집계 행으로 최종 투영하되, 모든
+  기여 원본 행 ID를 스냅샷에 보존한다.
+- 제외, 소프트 삭제, 복구는 가역·감사 가능해야 하며 다중 삭제/복구는 원자적으로
+  처리한다. 최종 표는 야근 인원 별도 열 없이 아홉 열을 사용한다.
+
+검토했지만 채택하지 않은 방식:
+
+- 업체명+Tracking No. 또는 장비명 fallback으로 누적 계열을 만들거나, 원본 행을
+  최종 표에 그대로 한 행씩 출력하는 방식은 현재 승인 계약과 충돌하므로 채택하지
+  않았다.
+
+### 4. 수행 내용
+
+- `docs/superpowers/specs/`에 원본 검토/대시보드 경계, 기준값, 계산·차단 예시,
+  일자 집계·평생 누적, 가역 삭제/복구, 아홉 열 출력, 안전 경계를 기록했다.
+- PRD, TRD, 시스템 아키텍처, ADR의 관련 설명을 Tracking No. 단일 식별자, 집계
+  최종 스냅샷, 가역 상태, 야근 인원의 검토용 보존으로 조정했다.
+- Task 1의 persistence/ledger TDD, Task 2의 aggregation/final projection TDD,
+  Task 3의 offscreen UI·원자적 삭제/복구 TDD 및 전체 회귀 근거를 이 기록에 연결했다.
+
+### 5. 변경 파일
+
+- `docs/superpowers/specs/2026-07-31-tracking-dashboard-cumulative-design.md`
+  - 승인된 대시보드·누적·최종 출력·안전 계약 추가.
+- `docs/PRD.md`
+  - 원본 검토와 대시보드 분리, Tracking No. 단일 누적 식별자, 가역 상태, 아홉 열
+    최종 투영으로 관련 요구사항 정정.
+- `docs/TRD.md`
+  - 대시보드 서비스, 기준/집계/추적 저장 구조, 원자적 상태 변경, 최종 출력 계약 정정.
+- `docs/SYSTEM_ARCHITECTURE.md`
+  - TrackingDashboardService 흐름과 집계 스냅샷/원본 연결 경계 반영.
+- `docs/ADR.md`
+  - 기존 충돌 문구를 정정하고 ADR-013 추가.
+- `HANDOFF.md`
+  - 현재 세션 기록 추가.
+- `.superpowers/sdd/tracking-dashboard-cumulative/task-4-report.md`
+  - Task 4 작업·검증·미검증 결과 기록.
+
+### 6. 검증 결과
+
+- 문서 내용: Task 4 brief, 구현 계획, Task 1~3 보고서와 대조하여 Tracking No. 단일
+  누적 식별자, 명시적 기준값, 집계 최종행, 가역 삭제/복구, 아홉 열 계약을 반영했다.
+- Task 1 역사적 TDD/검증: focused repository/service `49 passed`, fix round 1 full
+  `196 passed`; 실제 통합은 미실행.
+- Task 2 역사적 TDD/검증: RED `10 failed, 21 passed`, focused GREEN `31 passed`,
+  expanded `113 passed`; 실제 통합은 미실행.
+- Task 3 역사적 TDD/검증: UI/대시보드 RED와 GREEN, atomic delete/restore GREEN
+  `12 passed`, expanded `117 passed`, fresh full `231 passed in 138.06s`.
+- 부모 최종 검증:
+  - worktree `src`를 명시하고 offscreen Qt, `-p no:cacheprovider`, 새 writable
+    `--basetemp`로 전체 pytest: `231 passed in 136.34s`.
+  - `python -m compileall -q src`: exit code 0.
+  - `git diff --check`: exit code 0, LF→CRLF 안내만 출력.
+
+### 7. 실패 및 미확인 사항
+
+- 실제 Outlook/Inspector, Excel 접근·백업·쓰기, live/user SQLite DB, 실제 사용자
+  데스크톱 GUI 수용 검증은 모두 미실행이다.
+- offscreen Qt 자동 테스트는 실제 글꼴, 고해상도, 대화형 복구 흐름을 증명하지 않는다.
+- 복사한 production-shaped DB에서 additive migration과 기존 스냅샷 호환성을 확인하는
+  실환경 검증이 남아 있다.
+
+### 8. 현재 상태
+
+- Task 1~3 구현, 독립 검토, Task 4 문서화와 부모의 새 최종 자동·정적 검증: 완료.
+- 실제 Outlook·Excel·live DB·GUI 수용: 실환경 검증 필요.
+
+### 9. 다음 세션 실행 순서
+
+1. 승인받은 경우에만 복사한 DB와 제한된 날짜 범위로 migration/누적 결과를 검증하고,
+   실제 데스크톱에서 대시보드·복구·아홉 열 표를 확인한다.
+
+완료 판단 기준:
+
+- 새 전체 자동 검증과 정적 검증은 성공했다. 실환경 검증은 별도 승인 여부와 결과를
+  혼동 없이 기록한다.
+
+### 10. 위험 및 주의사항
+
+- Tracking No.가 없는 행, 누적 기준 누락, 필수 날짜/숫자 문제, 메일 누적과 계산 누적
+  불일치는 값을 추정하거나 0으로 바꾸지 않고 차단해야 한다.
+- Outlook은 계속 읽기 전용이고, 이 경로는 Excel 쓰기·Outlook 자동 발송을 하지 않는다.
+- 실제 메일 본문, 주소, 개인정보, 기밀 fixture를 문서·로그·테스트에 넣지 않는다.
+
+### 11. Git 및 변경 경계
+
+- 이번 세션 변경: 위 Markdown 문서와 Task 4 보고서만.
+- 기존 사용자/Task 1~3 코드·테스트 변경: 보존, 수정·되돌림 없음.
+- 커밋: 수행하지 않음.
+- 푸시: 수행하지 않음.
+- 브랜치 변경/PR: 수행하지 않음.
+- 자동 커밋·푸시 금지: 준수.
+
+### 12. 이전 기록 정정
+
+- 기존 상세 공수표 문서의 업체+Tracking No. 누적 키, 장비명 fallback, 원본 행 단위
+  최종 출력, 야근 인원 최종 별도 열 설명은 2026-07-31 Tracking No. 누적 대시보드
+  계약으로 대체한다. 과거 구현 기록 자체는 삭제하지 않는다.
+
 ## 2026-07-30 11:18:00 KST — 커밋 및 애플리케이션 실행
 
 ### 세션 정보

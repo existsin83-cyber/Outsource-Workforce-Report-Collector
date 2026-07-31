@@ -34,6 +34,15 @@ CREATE TABLE IF NOT EXISTS work_order_mappings (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS cumulative_baselines (
+    normalized_tracking_no TEXT PRIMARY KEY,
+    tracking_no TEXT NOT NULL,
+    effective_through_date TEXT NOT NULL,
+    cumulative_man_day TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS processed_mails (
     mail_entry_id TEXT PRIMARY KEY,
     subject TEXT,
@@ -118,6 +127,7 @@ CREATE TABLE IF NOT EXISTS work_report_rows (
     included INTEGER NOT NULL DEFAULT 1,
     warning_confirmed INTEGER NOT NULL DEFAULT 0,
     resolution_note TEXT,
+    deleted_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -149,6 +159,13 @@ CREATE TABLE IF NOT EXISTS final_report_rows (
     confirmed_cumulative_man_day TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS final_report_row_sources (
+    snapshot_row_id INTEGER NOT NULL
+        REFERENCES final_report_rows (snapshot_row_id) ON DELETE CASCADE,
+    source_row_id INTEGER NOT NULL,
+    PRIMARY KEY (snapshot_row_id, source_row_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_work_report_date
 ON work_report_rows(work_date);
 
@@ -163,6 +180,9 @@ ON work_report_rows(work_date, vendor_name, tracking_no, equipment_name);
 
 CREATE INDEX IF NOT EXISTS idx_final_report_rows_report
 ON final_report_rows(report_id, snapshot_row_id);
+
+CREATE INDEX IF NOT EXISTS idx_final_report_row_sources_source
+ON final_report_row_sources(source_row_id, snapshot_row_id);
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_active_work_order_tracking
 ON work_order_mappings(normalized_tracking_no)

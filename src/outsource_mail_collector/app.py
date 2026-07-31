@@ -26,6 +26,9 @@ from outsource_mail_collector.application.report_renderer import (
 )
 from outsource_mail_collector.application.review_service import ReviewService
 from outsource_mail_collector.application.settings_service import SettingsService
+from outsource_mail_collector.application.tracking_dashboard_service import (
+    TrackingDashboardService,
+)
 from outsource_mail_collector.application.work_report_service import (
     WorkReportService,
 )
@@ -57,6 +60,7 @@ def build_services(db_path: Path | None = None) -> ApplicationServices:
         work_report_service=WorkReportService(
             repository, calculation, work_order_mapping
         ),
+        tracking_dashboard_service=TrackingDashboardService(repository),
         final_report_service=FinalReportService(repository),
         report_renderer=HtmlReportRenderer(),
     )

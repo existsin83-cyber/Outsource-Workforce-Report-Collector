@@ -235,7 +235,7 @@ def test_man_day_basis_does_not_label_invalid_counts_as_mixed(
     assert man_day_basis(actual_headcount, night_headcount) == "확인 필요"
 
 
-def test_preview_uses_vendor_configuration_order_then_tracking(tmp_path):
+def test_preview_orders_daily_aggregates_by_tracking_number(tmp_path):
     repository = SQLiteRepository(tmp_path / "collector.db")
     repository.save_vendor(None, "업체B", [], True)
     repository.save_vendor(None, "업체A", [], True)
@@ -256,10 +256,133 @@ def test_preview_uses_vendor_configuration_order_then_tracking(tmp_path):
     assert [
         (row.vendor_name, row.tracking_no) for row in preview.rows
     ] == [
+        ("업체A", "A-01"),
         ("업체B", "B-01"),
         ("업체B", "B-02"),
-        ("업체A", "A-01"),
     ]
+
+
+def test_same_day_tracking_rows_aggregate_and_snapshot_all_sources(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    vendor = repository.save_vendor(None, "기준 업체", [], True)
+    repository.save_work_order_mapping(
+        None,
+        " ab 260101 ",
+        "기준 장비",
+        vendor.vendor_id,
+        "기준 팀",
+        True,
+    )
+    first = _create_ready_row(
+        repository,
+        vendor_name="메일 업체 A",
+        tracking_no="ab 260101",
+        equipment_name="메일 장비 A",
+        business_team="메일 팀 A",
+        actual_headcount=2,
+        night_headcount=1,
+        per_person_man_day=None,
+        confirmed_daily_man_day=Decimal("2.5"),
+        reported_cumulative_man_day=Decimal("22.5"),
+        calculated_cumulative_man_day=Decimal("22.5"),
+        confirmed_cumulative_man_day=Decimal("22.5"),
+    )
+    second = _create_ready_row(
+        repository,
+        vendor_name="메일 업체 B",
+        tracking_no="AB260101",
+        equipment_name="메일 장비 B",
+        business_team="메일 팀 B",
+        actual_headcount=1,
+        night_headcount=1,
+        confirmed_daily_man_day=Decimal("1.5"),
+        reported_cumulative_man_day=Decimal("24.0"),
+        calculated_cumulative_man_day=Decimal("24.0"),
+        confirmed_cumulative_man_day=Decimal("24.0"),
+    )
+    service = FinalReportService(repository)
+
+    preview = service.preview(date(2026, 7, 29), date(2026, 7, 29))
+
+    assert preview.can_confirm is True
+    assert len(preview.rows) == 1
+    row = preview.rows[0]
+    assert row.source_row_ids == (first.row_id, second.row_id)
+    assert row.tracking_no == "ab 260101"
+    assert row.vendor_name == "기준 업체"
+    assert row.equipment_name == "기준 장비"
+    assert row.business_team == "기준 팀"
+    assert row.actual_headcount == 3
+    assert row.night_headcount == 2
+    assert row.confirmed_daily_man_day == Decimal("4.0")
+    assert row.man_day_basis == "혼합"
+    assert row.reported_cumulative_man_day == Decimal("24.0")
+    assert row.calculated_cumulative_man_day == Decimal("24.0")
+    assert row.confirmed_cumulative_man_day == Decimal("24.0")
+
+    snapshot = service.confirm(date(2026, 7, 29), date(2026, 7, 29))
+
+    assert len(snapshot.rows) == 1
+    assert snapshot.rows[0].source_row_id == second.row_id
+    assert snapshot.rows[0].source_row_ids == (first.row_id, second.row_id)
+    assert snapshot.rows[0].confirmed_daily_man_day == Decimal("4.0")
+
+
+def test_snapshot_hash_changes_when_contributors_change_but_values_match(
+    tmp_path,
+):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    first = _create_ready_row(
+        repository,
+        vendor_name="업체A",
+        actual_headcount=1,
+        night_headcount=1,
+        confirmed_daily_man_day=Decimal("1.5"),
+        reported_cumulative_man_day=Decimal("13.5"),
+        calculated_cumulative_man_day=Decimal("13.5"),
+        confirmed_cumulative_man_day=Decimal("13.5"),
+    )
+    second = _create_ready_row(
+        repository,
+        vendor_name="업체A",
+        actual_headcount=1,
+        night_headcount=1,
+        confirmed_daily_man_day=Decimal("1.5"),
+        reported_cumulative_man_day=Decimal("15.0"),
+        calculated_cumulative_man_day=Decimal("15.0"),
+        confirmed_cumulative_man_day=Decimal("15.0"),
+    )
+    service = FinalReportService(repository)
+    combined = service.confirm(date(2026, 7, 29), date(2026, 7, 29))
+
+    repository.update_work_report_row(
+        first.row_id,
+        {"included": False},
+        resolution_note="contributor 교체",
+    )
+    repository.update_work_report_row(
+        second.row_id,
+        {"included": False},
+        resolution_note="contributor 교체",
+    )
+    replacement = _create_ready_row(
+        repository,
+        vendor_name="업체A",
+        actual_headcount=2,
+        night_headcount=2,
+        confirmed_daily_man_day=Decimal("3.0"),
+        reported_cumulative_man_day=Decimal("15.0"),
+        calculated_cumulative_man_day=Decimal("15.0"),
+        confirmed_cumulative_man_day=Decimal("15.0"),
+    )
+
+    replaced = service.confirm(date(2026, 7, 29), date(2026, 7, 29))
+
+    assert combined.rows[0].source_row_ids == (first.row_id, second.row_id)
+    assert replaced.rows[0].source_row_ids == (replacement.row_id,)
+    assert combined.rows[0].confirmed_daily_man_day == Decimal("3.0")
+    assert replaced.rows[0].confirmed_daily_man_day == Decimal("3.0")
+    assert combined.snapshot_hash != replaced.snapshot_hash
 
 
 def test_confirmation_snapshots_confirmed_values_and_source_edit_invalidates(
@@ -380,6 +503,7 @@ def test_legacy_snapshot_without_night_keeps_stored_basis(tmp_path):
 
     assert snapshot.rows[0].night_headcount is None
     assert snapshot.rows[0].man_day_basis == "1.5"
+    assert snapshot.rows[0].source_row_ids == (1,)
 
 
 def _create_ready_row(
@@ -395,10 +519,16 @@ def _create_ready_row(
     issue_codes: tuple[WorkReportIssueCode, ...] = (),
     warning_confirmed: bool = True,
     confirmed_daily_man_day: Decimal | None = Decimal("3.0"),
+    reported_cumulative_man_day: Decimal | None = None,
+    calculated_cumulative_man_day: Decimal | None = None,
     confirmed_cumulative_man_day: Decimal | None = Decimal("12.0"),
     included: bool = True,
     review_status: ReviewStatus = ReviewStatus.REVIEWED,
 ):
+    if reported_cumulative_man_day is None:
+        reported_cumulative_man_day = confirmed_cumulative_man_day
+    if calculated_cumulative_man_day is None:
+        calculated_cumulative_man_day = confirmed_cumulative_man_day
     return repository.create_manual_report_row(
         work_date=date(2026, 7, 29),
         work_date_confirmed=True,
@@ -412,10 +542,10 @@ def _create_ready_row(
         reported_daily_man_day=confirmed_daily_man_day,
         calculated_daily_man_day=confirmed_daily_man_day,
         confirmed_daily_man_day=confirmed_daily_man_day,
-        reported_cumulative_man_day=confirmed_cumulative_man_day,
-        calculated_cumulative_man_day=confirmed_cumulative_man_day,
+        reported_cumulative_man_day=reported_cumulative_man_day,
+        calculated_cumulative_man_day=calculated_cumulative_man_day,
         confirmed_cumulative_man_day=confirmed_cumulative_man_day,
-        cumulative_series_key=f"{vendor_name.casefold()}|T:{tracking_no}",
+        cumulative_series_key="".join(tracking_no.split()).upper(),
         issue_codes=issue_codes,
         review_status=review_status,
         included=included,

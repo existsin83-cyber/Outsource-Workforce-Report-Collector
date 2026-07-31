@@ -10,7 +10,7 @@ from outsource_mail_collector.application.report_renderer import (
 )
 
 
-def test_renderer_uses_ten_approved_columns_and_escapes_html() -> None:
+def test_renderer_uses_nine_approved_columns_and_escapes_html() -> None:
     snapshot = _snapshot(
         rows=(
             _row(
@@ -29,7 +29,6 @@ def test_renderer_uses_ten_approved_columns_and_escapes_html() -> None:
         "장비명",
         "사업팀",
         "실제 작업인원",
-        "야근 인원",
         "인당 공수",
         "투입 공수",
         "누적 공수",
@@ -38,8 +37,9 @@ def test_renderer_uses_ten_approved_columns_and_escapes_html() -> None:
     assert rendered.html.index("일자") < rendered.html.index("거래처명")
     assert "업체 &lt;A&gt;" in rendered.html
     assert "장비 &amp; 1" in rendered.html
-    assert "실제 작업인원\t야근 인원\t인당 공수" in rendered.plain_text
-    assert "3\t1\t혼합\t3.5\t20.0" in rendered.plain_text
+    assert "실제 작업인원\t인당 공수" in rendered.plain_text
+    assert "야근 인원" not in rendered.html
+    assert "3\t혼합\t3.5\t20.0" in rendered.plain_text
     assert "ENTRY" not in rendered.html
     assert "issue" not in rendered.html
     assert "calculated" not in rendered.html
@@ -56,7 +56,7 @@ def test_renderer_repeats_header_at_each_date_boundary() -> None:
 
     rendered = HtmlReportRenderer().render(snapshot)
 
-    assert rendered.html.count("<th") == 20
+    assert rendered.html.count("<th") == 18
     assert rendered.plain_text.count("일자\t거래처명") == 2
     assert "2026. 07. 29 (수) ~ 2026. 07. 30 (목) 전장 외주 공수표" in (
         rendered.html

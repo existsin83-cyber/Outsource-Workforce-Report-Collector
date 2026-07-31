@@ -47,9 +47,14 @@ def test_build_services_uses_requested_database(tmp_path: Path):
     assert db_path.exists()
     assert services.man_day_calculation_service is not None
     assert services.work_report_service is not None
+    assert services.tracking_dashboard_service is not None
     assert services.final_report_service is not None
     assert services.report_renderer is not None
     assert (
         services.work_report_service._repository
+        is services.final_report_service._repository
+    )
+    assert (
+        services.tracking_dashboard_service._repository
         is services.final_report_service._repository
     )

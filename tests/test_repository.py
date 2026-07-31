@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import date, datetime
 from decimal import Decimal
@@ -246,13 +247,220 @@ def test_additive_migration_preserves_old_rows_and_is_idempotent(tmp_path):
     } <= mail_columns
     assert {
         "work_order_mappings",
+        "cumulative_baselines",
         "work_report_rows",
         "final_reports",
         "final_report_rows",
     } <= tables
     assert "night_headcount" in work_report_columns
+    assert "deleted_at" in work_report_columns
     assert "night_headcount" in final_report_columns
     assert final_report_columns["per_person_man_day"] == ("TEXT", 1)
+
+
+def test_cumulative_baseline_round_trip_normalizes_quantizes_and_audits(
+    repository,
+):
+    created = repository.save_cumulative_baseline(
+        tracking_no=" ab 260101 ",
+        effective_through_date=date(2026, 7, 28),
+        cumulative_man_day=Decimal("10.04"),
+        resolution_note="legacy total checked",
+    )
+    updated = repository.save_cumulative_baseline(
+        tracking_no="AB260101",
+        effective_through_date=date(2026, 7, 29),
+        cumulative_man_day=Decimal("12.25"),
+        resolution_note="effective date corrected",
+    )
+
+    assert created.tracking_no == "ab 260101"
+    assert created.normalized_tracking_no == "AB260101"
+    assert created.cumulative_man_day == Decimal("10.0")
+    assert updated.normalized_tracking_no == "AB260101"
+    assert updated.effective_through_date == date(2026, 7, 29)
+    assert updated.cumulative_man_day == Decimal("12.3")
+    assert updated.created_at == created.created_at
+    assert repository.get_cumulative_baseline(" a b 2 6 0 1 0 1 ") == updated
+    assert repository.list_cumulative_baselines() == [updated]
+    assert [log.action for log in repository.list_action_logs()] == [
+        "CUMULATIVE_BASELINE_SAVED",
+        "CUMULATIVE_BASELINE_SAVED",
+    ]
+    assert [
+        json.loads(log.after_json or "{}")["resolution_note"]
+        for log in repository.list_action_logs()
+    ] == ["legacy total checked", "effective date corrected"]
+
+
+def test_legacy_work_rows_are_backfilled_by_tracking_without_data_loss(
+    tmp_path,
+):
+    db_path = tmp_path / "legacy.db"
+    _create_legacy_work_report_db(db_path)
+
+    first_open = SQLiteRepository(db_path)
+    second_open = SQLiteRepository(db_path)
+
+    rows = sorted(
+        second_open.list_all_work_report_rows(include_deleted=True),
+        key=lambda row: row.row_id,
+    )
+    assert first_open.db_path == second_open.db_path
+    assert [row.row_id for row in rows] == [1, 2, 3]
+    assert [row.cumulative_series_key for row in rows] == [
+        "AB260101",
+        None,
+        None,
+    ]
+    assert rows[0].issue_codes == (WorkReportIssueCode.DAILY_MISSING,)
+    assert rows[1].issue_codes == (WorkReportIssueCode.SERIES_KEY_MISSING,)
+    assert rows[2].issue_codes == (
+        WorkReportIssueCode.DATE_UNRESOLVED,
+        WorkReportIssueCode.SERIES_KEY_MISSING,
+    )
+    migrated_report = second_open.get_final_report(1)
+    assert migrated_report.invalidated_at is not None
+    assert [row.source_row_id for row in migrated_report.rows] == [1]
+    migration_logs = [
+        log
+        for log in second_open.list_action_logs()
+        if log.action == "WORK_REPORT_SERIES_BACKFILLED"
+    ]
+    assert len(migration_logs) == 1
+    assert json.loads(migration_logs[0].after_json or "{}")["row_ids"] == [
+        1,
+        2,
+        3,
+    ]
+
+
+def test_final_report_row_sources_table_migration_is_idempotent(tmp_path):
+    db_path = tmp_path / "collector.db"
+
+    SQLiteRepository(db_path)
+    SQLiteRepository(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        table_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM sqlite_master
+            WHERE type = 'table' AND name = 'final_report_row_sources'
+            """
+        ).fetchone()[0]
+        columns = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(final_report_row_sources)"
+            ).fetchall()
+        }
+    assert table_count == 1
+    assert columns == {"snapshot_row_id", "source_row_id"}
+
+
+def test_work_order_mapping_mutations_invalidate_snapshots_and_are_audited(
+    repository,
+):
+    first_vendor = repository.save_vendor(None, "업체A", [], True)
+    second_vendor = repository.save_vendor(None, "업체B", [], True)
+    source = _complete_report_row(repository, date(2026, 7, 29))
+
+    created_snapshot = repository.create_final_report_snapshot(
+        date_from=date(2026, 7, 29),
+        date_to=date(2026, 7, 29),
+        rows=[source],
+        snapshot_hash="before-mapping-create",
+    )
+    mapping = repository.save_work_order_mapping(
+        None,
+        "AB260101",
+        "장비 1",
+        first_vendor.vendor_id,
+        "WA",
+        True,
+    )
+    assert (
+        repository.get_final_report(created_snapshot.report_id).invalidated_at
+        is not None
+    )
+
+    updated_snapshot = repository.create_final_report_snapshot(
+        date_from=date(2026, 7, 29),
+        date_to=date(2026, 7, 29),
+        rows=[source],
+        snapshot_hash="before-mapping-update",
+    )
+    mapping = repository.save_work_order_mapping(
+        mapping.mapping_id,
+        "AB260101",
+        "장비 2",
+        second_vendor.vendor_id,
+        "WB",
+        True,
+    )
+    assert (
+        repository.get_final_report(updated_snapshot.report_id).invalidated_at
+        is not None
+    )
+
+    deactivated_snapshot = repository.create_final_report_snapshot(
+        date_from=date(2026, 7, 29),
+        date_to=date(2026, 7, 29),
+        rows=[source],
+        snapshot_hash="before-mapping-deactivate",
+    )
+    mapping = repository.save_work_order_mapping(
+        mapping.mapping_id,
+        mapping.tracking_no,
+        mapping.equipment_name,
+        mapping.vendor_id,
+        mapping.business_team,
+        False,
+    )
+    assert (
+        repository.get_final_report(
+            deactivated_snapshot.report_id
+        ).invalidated_at
+        is not None
+    )
+
+    deleted_snapshot = repository.create_final_report_snapshot(
+        date_from=date(2026, 7, 29),
+        date_to=date(2026, 7, 29),
+        rows=[source],
+        snapshot_hash="before-mapping-delete",
+    )
+    repository.delete_work_order_mapping(mapping.mapping_id)
+    assert (
+        repository.get_final_report(deleted_snapshot.report_id).invalidated_at
+        is not None
+    )
+
+    mapping_logs = [
+        log
+        for log in repository.list_action_logs()
+        if log.action.startswith("WORK_ORDER_MAPPING_")
+    ]
+    assert [log.action for log in mapping_logs] == [
+        "WORK_ORDER_MAPPING_SAVED",
+        "WORK_ORDER_MAPPING_SAVED",
+        "WORK_ORDER_MAPPING_SAVED",
+        "WORK_ORDER_MAPPING_DELETED",
+    ]
+    assert mapping_logs[0].before_json is None
+    assert json.loads(mapping_logs[0].after_json or "{}")["active"] is True
+    assert json.loads(mapping_logs[1].before_json or "{}")[
+        "equipment_name"
+    ] == "장비 1"
+    assert json.loads(mapping_logs[1].after_json or "{}")[
+        "equipment_name"
+    ] == "장비 2"
+    assert json.loads(mapping_logs[2].after_json or "{}")["active"] is False
+    assert json.loads(mapping_logs[3].before_json or "{}")[
+        "mapping_id"
+    ] == mapping.mapping_id
+    assert mapping_logs[3].after_json is None
 
 
 def test_work_report_rows_round_trip_decimal_values_and_allow_duplicates(
@@ -364,6 +572,266 @@ def test_confirmation_and_snapshot_are_audited_and_immutable(repository):
         "WORK_REPORT_ROW_UPDATED",
         "FINAL_REPORT_COPIED",
     ]
+
+
+def test_soft_delete_restore_filters_active_rows_and_invalidates_snapshot(
+    repository,
+):
+    row = _complete_report_row(repository, date(2026, 7, 29))
+    report = repository.create_final_report_snapshot(
+        date_from=date(2026, 7, 29),
+        date_to=date(2026, 7, 29),
+        rows=[row],
+        snapshot_hash="before-delete",
+    )
+
+    deleted = repository.soft_delete_work_report_row(
+        row.row_id, resolution_note="잘못 추가한 행"
+    )
+
+    assert deleted.deleted_at is not None
+    assert repository.list_work_report_rows(
+        date(2026, 7, 29), date(2026, 7, 29)
+    ) == []
+    assert repository.list_work_report_rows(
+        date(2026, 7, 29),
+        date(2026, 7, 29),
+        include_deleted=True,
+    ) == [deleted]
+    assert repository.get_final_report(report.report_id).invalidated_at is not None
+
+    restored = repository.restore_work_report_row(
+        row.row_id, resolution_note="삭제 취소"
+    )
+
+    assert restored.deleted_at is None
+    assert repository.list_work_report_rows(
+        date(2026, 7, 29), date(2026, 7, 29)
+    ) == [restored]
+    assert [log.action for log in repository.list_action_logs()][-2:] == [
+        "WORK_REPORT_ROW_SOFT_DELETED",
+        "WORK_REPORT_ROW_RESTORED",
+    ]
+
+
+def test_new_manual_work_report_row_invalidates_existing_snapshot(repository):
+    row = _complete_report_row(repository, date(2026, 7, 29))
+    report = repository.create_final_report_snapshot(
+        date_from=date(2026, 7, 29),
+        date_to=date(2026, 7, 29),
+        rows=[row],
+        snapshot_hash="before-new-row",
+    )
+
+    _complete_report_row(repository, date(2026, 7, 30))
+
+    assert repository.get_final_report(report.report_id).invalidated_at is not None
+
+
+def test_new_mail_work_report_row_invalidates_existing_snapshot(repository):
+    row = _complete_report_row(repository, date(2026, 7, 29))
+    report = repository.create_final_report_snapshot(
+        date_from=date(2026, 7, 29),
+        date_to=date(2026, 7, 29),
+        rows=[row],
+        snapshot_hash="before-mail-row",
+    )
+
+    repository.get_or_create_mail_report_row(
+        extracted_record_id=99,
+        mail_entry_id="ENTRY-99",
+        **_complete_report_values(date(2026, 7, 30)),
+    )
+
+    assert repository.get_final_report(report.report_id).invalidated_at is not None
+
+
+def _complete_report_row(repository, work_date: date):
+    return repository.create_manual_report_row(**_complete_report_values(work_date))
+
+
+def _complete_report_values(work_date: date) -> dict[str, object]:
+    return dict(
+        work_date=work_date,
+        work_date_confirmed=True,
+        vendor_name="업체A",
+        tracking_no="AB260101",
+        equipment_name="장비 1",
+        business_team="WA",
+        actual_headcount=2,
+        night_headcount=2,
+        per_person_man_day=Decimal("1.5"),
+        reported_daily_man_day=Decimal("3.0"),
+        calculated_daily_man_day=Decimal("3.0"),
+        confirmed_daily_man_day=Decimal("3.0"),
+        reported_cumulative_man_day=Decimal("13.0"),
+        calculated_cumulative_man_day=Decimal("13.0"),
+        confirmed_cumulative_man_day=Decimal("13.0"),
+        cumulative_series_key="AB260101",
+        issue_codes=(),
+        review_status=ReviewStatus.REVIEWED,
+        included=True,
+        resolution_note="확정",
+    )
+
+
+def _create_legacy_work_report_db(db_path) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE work_report_rows (
+                row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_type TEXT NOT NULL,
+                extracted_record_id INTEGER,
+                mail_entry_id TEXT,
+                work_date TEXT,
+                work_date_confirmed INTEGER NOT NULL DEFAULT 0,
+                vendor_name TEXT,
+                tracking_no TEXT,
+                equipment_name TEXT,
+                business_team TEXT,
+                actual_headcount INTEGER,
+                night_headcount INTEGER,
+                per_person_man_day TEXT,
+                reported_daily_man_day TEXT,
+                calculated_daily_man_day TEXT,
+                confirmed_daily_man_day TEXT,
+                reported_cumulative_man_day TEXT,
+                calculated_cumulative_man_day TEXT,
+                confirmed_cumulative_man_day TEXT,
+                cumulative_series_key TEXT,
+                issue_codes_json TEXT NOT NULL DEFAULT '[]',
+                review_status TEXT NOT NULL,
+                included INTEGER NOT NULL DEFAULT 1,
+                warning_confirmed INTEGER NOT NULL DEFAULT 0,
+                resolution_note TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        common = {
+            "source_type": "MANUAL",
+            "extracted_record_id": None,
+            "mail_entry_id": None,
+            "work_date": "2026-07-30",
+            "work_date_confirmed": 1,
+            "vendor_name": "Legacy Vendor",
+            "tracking_no": " ab 260101 ",
+            "equipment_name": "Legacy Equipment",
+            "business_team": "WA",
+            "actual_headcount": 2,
+            "night_headcount": 2,
+            "per_person_man_day": "1.5",
+            "reported_daily_man_day": "3.0",
+            "calculated_daily_man_day": "3.0",
+            "confirmed_daily_man_day": "3.0",
+            "reported_cumulative_man_day": None,
+            "calculated_cumulative_man_day": None,
+            "confirmed_cumulative_man_day": None,
+            "cumulative_series_key": "legacy vendor|T:AB260101",
+            "issue_codes_json": json.dumps(
+                [WorkReportIssueCode.DAILY_MISSING.value]
+            ),
+            "review_status": ReviewStatus.NORMAL.value,
+            "included": 1,
+            "warning_confirmed": 0,
+            "resolution_note": "legacy row",
+            "created_at": "2026-07-30T00:00:00+00:00",
+            "updated_at": "2026-07-30T00:00:00+00:00",
+        }
+        missing_tracking = {
+            **common,
+            "tracking_no": None,
+            "cumulative_series_key": "legacy vendor|E:legacy equipment",
+            "issue_codes_json": "[]",
+        }
+        unresolved_missing_tracking = {
+            **missing_tracking,
+            "work_date": None,
+            "tracking_no": "",
+            "cumulative_series_key": None,
+            "issue_codes_json": json.dumps(
+                [WorkReportIssueCode.DATE_UNRESOLVED.value]
+            ),
+        }
+        conn.executemany(
+            """
+            INSERT INTO work_report_rows(
+                source_type, extracted_record_id, mail_entry_id,
+                work_date, work_date_confirmed, vendor_name, tracking_no,
+                equipment_name, business_team, actual_headcount,
+                night_headcount, per_person_man_day, reported_daily_man_day,
+                calculated_daily_man_day, confirmed_daily_man_day,
+                reported_cumulative_man_day, calculated_cumulative_man_day,
+                confirmed_cumulative_man_day, cumulative_series_key,
+                issue_codes_json, review_status, included, warning_confirmed,
+                resolution_note, created_at, updated_at
+            )
+            VALUES (
+                :source_type, :extracted_record_id, :mail_entry_id,
+                :work_date, :work_date_confirmed, :vendor_name, :tracking_no,
+                :equipment_name, :business_team, :actual_headcount,
+                :night_headcount, :per_person_man_day,
+                :reported_daily_man_day, :calculated_daily_man_day,
+                :confirmed_daily_man_day, :reported_cumulative_man_day,
+                :calculated_cumulative_man_day,
+                :confirmed_cumulative_man_day, :cumulative_series_key,
+                :issue_codes_json, :review_status, :included,
+                :warning_confirmed, :resolution_note, :created_at, :updated_at
+            )
+            """,
+            [common, missing_tracking, unresolved_missing_tracking],
+        )
+        conn.executescript(
+            """
+            CREATE TABLE final_reports (
+                report_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date_from TEXT NOT NULL,
+                date_to TEXT NOT NULL,
+                snapshot_hash TEXT NOT NULL,
+                confirmed_at TEXT NOT NULL,
+                copied_at TEXT,
+                invalidated_at TEXT
+            );
+
+            CREATE TABLE final_report_rows (
+                snapshot_row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                report_id INTEGER NOT NULL REFERENCES final_reports(report_id),
+                source_row_id INTEGER NOT NULL,
+                work_date TEXT NOT NULL,
+                vendor_name TEXT NOT NULL,
+                vendor_sort_order INTEGER NOT NULL DEFAULT 0,
+                tracking_no TEXT,
+                equipment_name TEXT,
+                business_team TEXT,
+                actual_headcount INTEGER NOT NULL,
+                night_headcount INTEGER,
+                per_person_man_day TEXT NOT NULL,
+                confirmed_daily_man_day TEXT NOT NULL,
+                confirmed_cumulative_man_day TEXT NOT NULL
+            );
+
+            INSERT INTO final_reports(
+                report_id, date_from, date_to, snapshot_hash, confirmed_at
+            )
+            VALUES (
+                1, '2026-07-30', '2026-07-30', 'legacy-snapshot',
+                '2026-07-30T01:00:00+00:00'
+            );
+
+            INSERT INTO final_report_rows(
+                report_id, source_row_id, work_date, vendor_name,
+                vendor_sort_order, tracking_no, equipment_name, business_team,
+                actual_headcount, night_headcount, per_person_man_day,
+                confirmed_daily_man_day, confirmed_cumulative_man_day
+            )
+            VALUES (
+                1, 1, '2026-07-30', 'Legacy Vendor', 0, ' ab 260101 ',
+                'Legacy Equipment', 'WA', 2, 2, '1.5', '3.0', '3.0'
+            );
+            """
+        )
 
 
 def _mail_record() -> MailRecord:

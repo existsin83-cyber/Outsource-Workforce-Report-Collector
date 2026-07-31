@@ -377,6 +377,9 @@ Outlook read-only
   → WorkReportService
       ├─ ManDayCalculationService
       └─ SQLite work_report_rows
+  → TrackingDashboardService
+      ├─ Tracking No. lifetime summaries
+      └─ work-date aggregates and source drill-down
   → FinalReportService
   → immutable final_report_rows
   → HtmlReportRenderer
@@ -388,16 +391,21 @@ Outlook read-only
   Outlook, Excel, SQLite에 의존하지 않는다.
 - `parsing/`의 작업일 판정은 제목을 우선하고 본문·수신일 불일치 근거만 반환한다.
 - `application/`은 보고값, 계산값, 확정값을 분리하고 최초 누적 기준을 추정하지
-  않는다.
+  않는다. `TrackingDashboardService`는 정규화 Tracking No.만으로 평생 계열을
+  관리하며, 명시적 기준 적용 종료일·기준값 이후 활성 행을 시간순으로 계산한다.
 - `WorkOrderMappingService`는 정규화 수주번호의 exact mapping으로 업체와
   사업팀을 공급한다. 장비명은 교차 검증에만 사용하며 불일치는 매핑을 바꾸지
   않고 경고로 전달한다.
 - `ManDayCalculationService`는 당일 보고 공수와 별도로
   `실제 작업인원 + 야근 인원 × 0.5`를 계산한다. 인당 공수 표시는 전원 주간
   `1.0`, 전원 야근 `1.5`, 일부 야근 `혼합`으로 파생한다.
-- `infrastructure/db/`는 취합 후보와 최종 스냅샷을 별도 테이블에 저장한다.
-- `ui/`는 계산하지 않고 서비스 결과를 표시하며 수동 입력과 검토 결정을 전달한다.
-- 최종 스냅샷과 출력 표는 `야근 인원`을 별도 열로 보존한다.
+- `infrastructure/db/`는 원본 취합 행, Tracking No.별 누적 기준, 집계 최종
+  스냅샷과 스냅샷-원본 행 연결을 별도 테이블에 저장한다.
+- `ui/`는 원본 메일 행 검토와 별도 대시보드 집계 관리를 구분하고 계산하지 않는다.
+  제외 토글과 소프트 삭제/복구는 application 서비스의 원자적 작업으로만 전달한다.
+- 최종 스냅샷과 출력 표는 `일자, 거래처명, Tracking No., 장비명, 사업팀, 실제
+  작업인원, 인당 공수, 투입 공수, 누적 공수`의 아홉 열을 사용한다. `야근 인원`은
+  원본/대시보드 검토 정보로만 남긴다.
 - 수주번호 미등록과 유효하지 않은 야근 인원은 application 최종화 경계에서
   차단한다.
 - 클립보드 복사 성공 후에만 복사 시각을 기록한다.

@@ -72,7 +72,7 @@ class ReviewGridWidget(QTableWidget):
     """Display compilation rows while delegating decisions to application services."""
 
     original_requested = Signal(str)
-    exclude_requested = Signal(int)
+    inclusion_requested = Signal(int, bool)
     review_requested = Signal(int)
 
     def __init__(
@@ -206,16 +206,20 @@ class ReviewGridWidget(QTableWidget):
                 self.review_requested.emit(row_id)
             )
         )
-        exclude = QToolButton()
-        exclude.setText("제외")
-        exclude.setToolTip("제외: 이 행을 최종 확정 및 Excel 전송 대상에서 제외합니다.")
-        exclude.clicked.connect(
-            lambda _checked=False, row_id=row.row_id: (
-                self.exclude_requested.emit(row_id)
+        inclusion = QToolButton()
+        inclusion.setText("제외" if row.included else "제외 취소")
+        inclusion.setToolTip(
+            "제외: 이 행을 대시보드와 최종 표에서 제외합니다."
+            if row.included
+            else "제외 취소: 이 행을 다시 대시보드와 최종 표에 포함합니다."
+        )
+        inclusion.clicked.connect(
+            lambda _checked=False, row_id=row.row_id, included=not row.included: (
+                self.inclusion_requested.emit(row_id, included)
             )
         )
         layout.addWidget(review)
-        layout.addWidget(exclude)
+        layout.addWidget(inclusion)
         return container
 
 

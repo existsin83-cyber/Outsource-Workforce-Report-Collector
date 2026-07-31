@@ -26,6 +26,7 @@ from outsource_mail_collector.application.models import (
 )
 from outsource_mail_collector.domain.work_report import WorkReportIssueCode
 from outsource_mail_collector.ui.clipboard import ClipboardWriter
+from outsource_mail_collector.ui.deleted_rows_dialog import DeletedRowsDialog
 from outsource_mail_collector.ui.final_report_dialog import FinalReportDialog
 from outsource_mail_collector.ui.manual_row_dialog import ManualRowDialog
 from outsource_mail_collector.ui.problem_review_dialog import (
@@ -33,6 +34,9 @@ from outsource_mail_collector.ui.problem_review_dialog import (
 )
 from outsource_mail_collector.ui.review_grid import ReviewGridWidget
 from outsource_mail_collector.ui.settings_dialog import SettingsDialog
+from outsource_mail_collector.ui.tracking_dashboard_dialog import (
+    TrackingDashboardDialog,
+)
 from outsource_mail_collector.ui.workers import CollectionWorker
 
 
@@ -61,7 +65,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.missing_banner)
         self.review_grid = ReviewGridWidget()
         self.review_grid.original_requested.connect(self._open_original)
-        self.review_grid.exclude_requested.connect(self._exclude_row)
+        self.review_grid.inclusion_requested.connect(self._set_row_included)
         self.review_grid.review_requested.connect(self._review_problem_row)
         layout.addWidget(self.review_grid)
         layout.addWidget(self._build_action_bar())
@@ -137,11 +141,20 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(bar)
         self.manual_button = QPushButton("수동 행 추가")
         self.manual_button.clicked.connect(self._add_manual_row)
+        self.delete_button = QPushButton("선택 삭제")
+        self.delete_button.clicked.connect(self._delete_selected_rows)
+        self.recovery_button = QPushButton("삭제 항목 복구")
+        self.recovery_button.clicked.connect(self._open_deleted_rows)
+        self.dashboard_button = QPushButton("수주 공수 대시보드")
+        self.dashboard_button.clicked.connect(self._open_tracking_dashboard)
         self.preview_button = QPushButton("최종 표 미리보기")
         self.preview_button.clicked.connect(self._open_final_preview)
         self.excel_button = QPushButton("Excel 반영")
         self.excel_button.clicked.connect(self._show_excel_notice)
         layout.addWidget(self.manual_button)
+        layout.addWidget(self.delete_button)
+        layout.addWidget(self.recovery_button)
+        layout.addWidget(self.dashboard_button)
         layout.addStretch()
         layout.addWidget(self.preview_button)
         layout.addWidget(self.excel_button)
@@ -343,11 +356,103 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "행 확정 실패", str(exc))
             self._reload_rows()
 
-    def _exclude_row(self, row_id: int) -> None:
-        self._services.work_report_service.set_included(
-            row_id, False, resolution_note="사용자 반영 제외"
-        )
+    def _set_row_included(self, row_id: int, included: bool) -> None:
+        try:
+            self._services.work_report_service.set_included(
+                row_id,
+                included,
+                resolution_note=(
+                    "사용자 반영 제외 취소"
+                    if included
+                    else "사용자 반영 제외"
+                ),
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "포함 상태 변경 실패", str(exc))
+            return
         self._reload_rows()
+
+    def _delete_selected_rows(self) -> None:
+        row_ids = self.review_grid.checked_row_ids()
+        if not row_ids:
+            QMessageBox.information(
+                self, "삭제 행 선택", "삭제할 행을 선택해 주세요."
+            )
+            return
+        answer = QMessageBox.question(
+            self,
+            "선택 행 삭제",
+            "선택한 행을 애플리케이션에서 삭제하시겠습니까?\n"
+            "Outlook 메일은 삭제하거나 변경하지 않습니다.\n"
+            "삭제한 행은 대시보드와 최종 표에서 빠지며 나중에 복구할 수 있습니다.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self._services.work_report_service.soft_delete_rows(
+                row_ids, resolution_note="사용자 선택 삭제"
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "선택 삭제 실패", str(exc))
+            return
+        self._reload_rows()
+
+    def _open_deleted_rows(self) -> None:
+        result = self._services.work_report_service.list_rows(
+            date.min, date.max, include_deleted=True
+        )
+        deleted_rows = tuple(
+            row for row in result.rows if row.deleted_at is not None
+        )
+        if not deleted_rows:
+            QMessageBox.information(
+                self, "삭제 항목 복구", "복구할 삭제 항목이 없습니다."
+            )
+            return
+        dialog = DeletedRowsDialog(deleted_rows, self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        row_ids = dialog.selected_row_ids()
+        if not row_ids:
+            QMessageBox.information(
+                self, "복구 항목 선택", "복구할 행을 선택해 주세요."
+            )
+            return
+        resolution_note = dialog.resolution_note().strip()
+        if not resolution_note:
+            QMessageBox.warning(
+                self, "복구 사유 필요", "복구 사유를 입력해 주세요."
+            )
+            return
+        answer = QMessageBox.question(
+            self,
+            "선택 행 복구",
+            "선택한 행을 복구하시겠습니까?\n"
+            "복구 후 누적 공수는 다시 계산됩니다.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self._services.work_report_service.restore_rows(
+                row_ids, resolution_note=resolution_note
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "삭제 항목 복구 실패", str(exc))
+            return
+        self._reload_rows()
+
+    def _open_tracking_dashboard(self) -> None:
+        dialog = TrackingDashboardDialog(
+            self._services.tracking_dashboard_service,
+            self._services.work_report_service,
+            self._reload_rows,
+            self,
+        )
+        dialog.exec()
 
     def _open_final_preview(self) -> None:
         date_from, date_to = self._selected_work_range()

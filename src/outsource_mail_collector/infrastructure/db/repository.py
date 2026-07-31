@@ -10,7 +10,7 @@ import unicodedata
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import date, datetime, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from importlib import resources
 from pathlib import Path
 from enum import Enum
@@ -63,6 +63,16 @@ class WorkOrderMapping:
     vendor_name: str
     business_team: str
     active: bool
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class CumulativeBaseline:
+    normalized_tracking_no: str
+    tracking_no: str
+    effective_through_date: date
+    cumulative_man_day: Decimal
     created_at: str
     updated_at: str
 
@@ -138,6 +148,7 @@ class StoredWorkReportRow:
     included: bool
     warning_confirmed: bool
     resolution_note: str | None
+    deleted_at: str | None
     created_at: str
     updated_at: str
 
@@ -155,6 +166,25 @@ class StoredFinalReportRow:
     business_team: str | None
     actual_headcount: int
     night_headcount: int | None
+    man_day_basis: str
+    confirmed_daily_man_day: Decimal
+    confirmed_cumulative_man_day: Decimal
+    source_row_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class FinalReportRowInput:
+    """Aggregate values to persist in one immutable final snapshot row."""
+
+    source_row_id: int
+    source_row_ids: tuple[int, ...]
+    work_date: date
+    vendor_name: str
+    tracking_no: str | None
+    equipment_name: str | None
+    business_team: str | None
+    actual_headcount: int
+    night_headcount: int
     man_day_basis: str
     confirmed_daily_man_day: Decimal
     confirmed_cumulative_man_day: Decimal
@@ -200,6 +230,7 @@ _MIGRATION_COLUMNS: dict[str, dict[str, str]] = {
     },
     "work_report_rows": {
         "night_headcount": "INTEGER",
+        "deleted_at": "TEXT",
     },
     "final_report_rows": {
         "night_headcount": "INTEGER",
@@ -280,6 +311,95 @@ def _apply_additive_migrations(conn: sqlite3.Connection) -> None:
         WHERE sort_order = 0
         """
     )
+    _backfill_cumulative_series_keys(conn)
+
+
+def _backfill_cumulative_series_keys(conn: sqlite3.Connection) -> None:
+    """Normalize legacy ledger keys without discarding source rows or issues."""
+
+    changes: list[dict[str, object]] = []
+    rows = conn.execute(
+        """
+        SELECT row_id, tracking_no, cumulative_series_key, issue_codes_json
+        FROM work_report_rows
+        """
+    ).fetchall()
+    missing_code = WorkReportIssueCode.SERIES_KEY_MISSING.value
+    for row_id, tracking_no, series_key, issue_codes_json in rows:
+        normalized_tracking_no = normalize_tracking_no(tracking_no or "")
+        issue_codes = list(json.loads(issue_codes_json or "[]"))
+        if normalized_tracking_no:
+            updated_issues = [
+                code for code in issue_codes if code != missing_code
+            ]
+            updated_series_key = normalized_tracking_no
+        else:
+            updated_issues = list(issue_codes)
+            if missing_code not in updated_issues:
+                updated_issues.append(missing_code)
+            updated_series_key = None
+        if (
+            series_key != updated_series_key
+            or issue_codes != updated_issues
+        ):
+            changes.append(
+                {
+                    "row_id": int(row_id),
+                    "before": {
+                        "cumulative_series_key": series_key,
+                        "issue_codes": issue_codes,
+                    },
+                    "after": {
+                        "cumulative_series_key": updated_series_key,
+                        "issue_codes": updated_issues,
+                    },
+                }
+            )
+            conn.execute(
+                """
+                UPDATE work_report_rows
+                SET cumulative_series_key = ?, issue_codes_json = ?
+                WHERE row_id = ?
+                """,
+                (
+                    updated_series_key,
+                    json.dumps(updated_issues, ensure_ascii=False),
+                    row_id,
+                ),
+            )
+    if changes:
+        _invalidate_reports(conn)
+        row_ids = [int(change["row_id"]) for change in changes]
+        _insert_action_log(
+            conn,
+            "WORK_REPORT_SERIES_BACKFILLED",
+            ",".join(str(row_id) for row_id in row_ids),
+            json.dumps(
+                {
+                    "rows": [
+                        {
+                            "row_id": change["row_id"],
+                            **change["before"],  # type: ignore[arg-type]
+                        }
+                        for change in changes
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            json.dumps(
+                {
+                    "row_ids": row_ids,
+                    "rows": [
+                        {
+                            "row_id": change["row_id"],
+                            **change["after"],  # type: ignore[arg-type]
+                        }
+                        for change in changes
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        )
 
 
 class SQLiteRepository:
@@ -530,6 +650,19 @@ class SQLiteRepository:
         now = _utc_now()
         try:
             with self._connect() as conn:
+                existing = None
+                if mapping_id is not None:
+                    existing = conn.execute(
+                        """
+                        SELECT work_order_mappings.*,
+                               vendors.canonical_name AS vendor_name
+                        FROM work_order_mappings
+                        JOIN vendors
+                          ON vendors.vendor_id = work_order_mappings.vendor_id
+                        WHERE work_order_mappings.mapping_id = ?
+                        """,
+                        (mapping_id,),
+                    ).fetchone()
                 if mapping_id is None:
                     cursor = conn.execute(
                         """
@@ -582,6 +715,28 @@ class SQLiteRepository:
                     """,
                     (mapping_id,),
                 ).fetchone()
+                if row is not None:
+                    stored_mapping = _work_order_mapping_from_row(row)
+                    _invalidate_reports(conn)
+                    _insert_action_log(
+                        conn,
+                        "WORK_ORDER_MAPPING_SAVED",
+                        str(mapping_id),
+                        (
+                            json.dumps(
+                                _json_safe(
+                                    _work_order_mapping_from_row(existing)
+                                ),
+                                ensure_ascii=False,
+                            )
+                            if existing is not None
+                            else None
+                        ),
+                        json.dumps(
+                            _json_safe(stored_mapping),
+                            ensure_ascii=False,
+                        ),
+                    )
         except sqlite3.IntegrityError as exc:
             if "work_order_mappings.normalized_tracking_no" in str(exc):
                 raise DuplicateEntityError("이미 등록된 활성 수주번호입니다.") from exc
@@ -590,11 +745,142 @@ class SQLiteRepository:
             raise KeyError(mapping_id)
         return _work_order_mapping_from_row(row)
 
+    def save_cumulative_baseline(
+        self,
+        *,
+        tracking_no: str,
+        effective_through_date: date,
+        cumulative_man_day: Decimal,
+        resolution_note: str,
+    ) -> CumulativeBaseline:
+        """Create or replace the explicit cumulative seed for one Tracking No."""
+
+        normalized_tracking_no = normalize_tracking_no(tracking_no)
+        display_tracking_no = tracking_no.strip()
+        if not normalized_tracking_no:
+            raise ValueError("수주번호는 필수입니다.")
+        note = resolution_note.strip()
+        if not note:
+            raise ValueError("누적 기준 변경 사유를 입력해 주세요.")
+        parsed_cumulative = _one_decimal_man_day(cumulative_man_day)
+        now = _utc_now()
+        with self._connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT * FROM cumulative_baselines
+                WHERE normalized_tracking_no = ?
+                """,
+                (normalized_tracking_no,),
+            ).fetchone()
+            conn.execute(
+                """
+                INSERT INTO cumulative_baselines(
+                    normalized_tracking_no, tracking_no,
+                    effective_through_date, cumulative_man_day,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(normalized_tracking_no) DO UPDATE SET
+                    tracking_no = excluded.tracking_no,
+                    effective_through_date = excluded.effective_through_date,
+                    cumulative_man_day = excluded.cumulative_man_day,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    normalized_tracking_no,
+                    display_tracking_no,
+                    effective_through_date.isoformat(),
+                    _decimal_to_db(parsed_cumulative),
+                    now,
+                    now,
+                ),
+            )
+            stored = conn.execute(
+                """
+                SELECT * FROM cumulative_baselines
+                WHERE normalized_tracking_no = ?
+                """,
+                (normalized_tracking_no,),
+            ).fetchone()
+            assert stored is not None
+            baseline = _cumulative_baseline_from_row(stored)
+            _invalidate_reports(conn)
+            _insert_action_log(
+                conn,
+                "CUMULATIVE_BASELINE_SAVED",
+                normalized_tracking_no,
+                (
+                    json.dumps(
+                        _json_safe(_cumulative_baseline_from_row(existing)),
+                        ensure_ascii=False,
+                    )
+                    if existing is not None
+                    else None
+                ),
+                json.dumps(
+                    {
+                        **_json_safe(baseline),  # type: ignore[arg-type]
+                        "resolution_note": note,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        return baseline
+
+    def get_cumulative_baseline(
+        self, tracking_no: str
+    ) -> CumulativeBaseline | None:
+        normalized_tracking_no = normalize_tracking_no(tracking_no)
+        if not normalized_tracking_no:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM cumulative_baselines
+                WHERE normalized_tracking_no = ?
+                """,
+                (normalized_tracking_no,),
+            ).fetchone()
+        return None if row is None else _cumulative_baseline_from_row(row)
+
+    def list_cumulative_baselines(self) -> list[CumulativeBaseline]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM cumulative_baselines
+                ORDER BY normalized_tracking_no
+                """
+            ).fetchall()
+        return [_cumulative_baseline_from_row(row) for row in rows]
+
     def delete_work_order_mapping(self, mapping_id: int) -> None:
         with self._connect() as conn:
-            conn.execute(
+            existing = conn.execute(
+                """
+                SELECT work_order_mappings.*,
+                       vendors.canonical_name AS vendor_name
+                FROM work_order_mappings
+                JOIN vendors
+                  ON vendors.vendor_id = work_order_mappings.vendor_id
+                WHERE work_order_mappings.mapping_id = ?
+                """,
+                (mapping_id,),
+            ).fetchone()
+            cursor = conn.execute(
                 "DELETE FROM work_order_mappings WHERE mapping_id = ?", (mapping_id,)
             )
+            if cursor.rowcount and existing is not None:
+                _invalidate_reports(conn)
+                _insert_action_log(
+                    conn,
+                    "WORK_ORDER_MAPPING_DELETED",
+                    str(mapping_id),
+                    json.dumps(
+                        _json_safe(_work_order_mapping_from_row(existing)),
+                        ensure_ascii=False,
+                    ),
+                    None,
+                )
 
     def is_mail_processed(self, mail_entry_id: str) -> bool:
         with self._connect() as conn:
@@ -711,7 +997,9 @@ class SQLiteRepository:
                 now,
             ),
         )
-        return int(cursor.lastrowid)
+        row_id = int(cursor.lastrowid)
+        _invalidate_reports(conn)
+        return row_id
 
     def list_review_records(
         self,
@@ -915,7 +1203,9 @@ class SQLiteRepository:
                 now,
             ),
         )
-        return int(cursor.lastrowid)
+        row_id = int(cursor.lastrowid)
+        _invalidate_reports(conn)
+        return row_id
 
     def get_work_report_row(self, row_id: int) -> StoredWorkReportRow:
         with self._connect() as conn:
@@ -927,27 +1217,114 @@ class SQLiteRepository:
         return _work_report_from_row(row)
 
     def list_work_report_rows(
-        self, date_from: date, date_to: date
+        self,
+        date_from: date,
+        date_to: date,
+        *,
+        include_deleted: bool = False,
     ) -> list[StoredWorkReportRow]:
+        if include_deleted:
+            date_filter = (
+                "(work_date BETWEEN ? AND ? "
+                "OR (work_date IS NULL AND deleted_at IS NOT NULL))"
+            )
+            deleted_filter = ""
+        else:
+            date_filter = "work_date BETWEEN ? AND ?"
+            deleted_filter = "AND deleted_at IS NULL"
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT * FROM work_report_rows
-                WHERE work_date BETWEEN ? AND ?
+                WHERE {date_filter}
+                {deleted_filter}
                 ORDER BY work_date, row_id
                 """,
                 (date_from.isoformat(), date_to.isoformat()),
             ).fetchall()
         return [_work_report_from_row(row) for row in rows]
 
-    def list_all_work_report_rows(self) -> list[StoredWorkReportRow]:
+    def list_all_work_report_rows(
+        self, *, include_deleted: bool = False
+    ) -> list[StoredWorkReportRow]:
         """Return every persisted compilation row for scoped refresh work."""
 
+        deleted_filter = "" if include_deleted else "WHERE deleted_at IS NULL"
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM work_report_rows ORDER BY work_date, row_id"
+                f"""
+                SELECT * FROM work_report_rows
+                {deleted_filter}
+                ORDER BY work_date, row_id
+                """
             ).fetchall()
         return [_work_report_from_row(row) for row in rows]
+
+    def soft_delete_work_report_row(
+        self, row_id: int, *, resolution_note: str
+    ) -> StoredWorkReportRow:
+        """Hide a work row without destroying its recovery state."""
+
+        note = resolution_note.strip()
+        if not note:
+            raise ValueError("삭제 사유를 입력해 주세요.")
+        before = self.get_work_report_row(row_id)
+        if before.deleted_at is not None:
+            return before
+        deleted_at = _utc_now()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE work_report_rows
+                SET deleted_at = ?, resolution_note = ?, updated_at = ?
+                WHERE row_id = ?
+                """,
+                (deleted_at, note, deleted_at, row_id),
+            )
+            if cursor.rowcount == 0:
+                raise KeyError(row_id)
+            _invalidate_reports(conn)
+            _insert_action_log(
+                conn,
+                "WORK_REPORT_ROW_SOFT_DELETED",
+                str(row_id),
+                json.dumps(_json_safe(before), ensure_ascii=False),
+                json.dumps({"deleted_at": deleted_at}, ensure_ascii=False),
+            )
+        return self.get_work_report_row(row_id)
+
+    def restore_work_report_row(
+        self, row_id: int, *, resolution_note: str
+    ) -> StoredWorkReportRow:
+        """Restore one application-deleted work row."""
+
+        note = resolution_note.strip()
+        if not note:
+            raise ValueError("복원 사유를 입력해 주세요.")
+        before = self.get_work_report_row(row_id)
+        if before.deleted_at is None:
+            return before
+        updated_at = _utc_now()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE work_report_rows
+                SET deleted_at = NULL, resolution_note = ?, updated_at = ?
+                WHERE row_id = ?
+                """,
+                (note, updated_at, row_id),
+            )
+            if cursor.rowcount == 0:
+                raise KeyError(row_id)
+            _invalidate_reports(conn)
+            _insert_action_log(
+                conn,
+                "WORK_REPORT_ROW_RESTORED",
+                str(row_id),
+                json.dumps(_json_safe(before), ensure_ascii=False),
+                json.dumps({"deleted_at": None}, ensure_ascii=False),
+            )
+        return self.get_work_report_row(row_id)
 
     def update_work_report_row(
         self,
@@ -1112,7 +1489,7 @@ class SQLiteRepository:
         *,
         date_from: date,
         date_to: date,
-        rows: list[StoredWorkReportRow],
+        rows: list[StoredWorkReportRow | FinalReportRowInput],
         snapshot_hash: str,
     ) -> StoredFinalReport:
         now = _utc_now()
@@ -1157,8 +1534,26 @@ class SQLiteRepository:
                 """,
                 (report_id,),
             ).fetchall()
+            source_rows = conn.execute(
+                """
+                SELECT snapshot_row_id, source_row_id
+                FROM final_report_row_sources
+                WHERE snapshot_row_id IN (
+                    SELECT snapshot_row_id
+                    FROM final_report_rows
+                    WHERE report_id = ?
+                )
+                ORDER BY snapshot_row_id, source_row_id
+                """,
+                (report_id,),
+            ).fetchall()
         if report is None:
             raise KeyError(report_id)
+        source_ids_by_snapshot: dict[int, list[int]] = {}
+        for source in source_rows:
+            source_ids_by_snapshot.setdefault(
+                int(source["snapshot_row_id"]), []
+            ).append(int(source["source_row_id"]))
         return StoredFinalReport(
             report_id=int(report["report_id"]),
             date_from=date.fromisoformat(str(report["date_from"])),
@@ -1167,7 +1562,17 @@ class SQLiteRepository:
             confirmed_at=str(report["confirmed_at"]),
             copied_at=report["copied_at"],
             invalidated_at=report["invalidated_at"],
-            rows=tuple(_final_report_row_from_db(row) for row in rows),
+            rows=tuple(
+                _final_report_row_from_db(
+                    row,
+                    tuple(
+                        source_ids_by_snapshot.get(
+                            int(row["snapshot_row_id"]), ()
+                        )
+                    ),
+                )
+                for row in rows
+            ),
         )
 
     def mark_final_report_copied(self, report_id: int) -> StoredFinalReport:
@@ -1252,6 +1657,19 @@ def _work_order_mapping_from_row(row: sqlite3.Row) -> WorkOrderMapping:
         vendor_name=str(row["vendor_name"]),
         business_team=str(row["business_team"]),
         active=bool(row["active"]),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+def _cumulative_baseline_from_row(row: sqlite3.Row) -> CumulativeBaseline:
+    return CumulativeBaseline(
+        normalized_tracking_no=str(row["normalized_tracking_no"]),
+        tracking_no=str(row["tracking_no"]),
+        effective_through_date=date.fromisoformat(
+            str(row["effective_through_date"])
+        ),
+        cumulative_man_day=Decimal(str(row["cumulative_man_day"])),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )
@@ -1342,6 +1760,7 @@ def _work_report_from_row(row: sqlite3.Row) -> StoredWorkReportRow:
         included=bool(row["included"]),
         warning_confirmed=bool(row["warning_confirmed"]),
         resolution_note=row["resolution_note"],
+        deleted_at=row["deleted_at"],
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )
@@ -1350,9 +1769,17 @@ def _work_report_from_row(row: sqlite3.Row) -> StoredWorkReportRow:
 def _insert_final_report_row(
     conn: sqlite3.Connection,
     report_id: int,
-    row: StoredWorkReportRow,
+    row: StoredWorkReportRow | FinalReportRowInput,
     vendor_orders: dict[str, int],
 ) -> None:
+    if isinstance(row, StoredWorkReportRow):
+        source_row_id = row.row_id
+        source_row_ids = (row.row_id,)
+        basis = man_day_basis(row.actual_headcount, row.night_headcount)
+    else:
+        source_row_id = row.source_row_id
+        source_row_ids = tuple(sorted(set(row.source_row_ids)))
+        basis = row.man_day_basis
     required = (
         row.work_date,
         row.vendor_name,
@@ -1363,8 +1790,7 @@ def _insert_final_report_row(
     )
     if any(value is None for value in required):
         raise ValueError("최종 보고서 행의 필수 확정값이 누락되었습니다.")
-    basis = man_day_basis(row.actual_headcount, row.night_headcount)
-    conn.execute(
+    cursor = conn.execute(
         """
         INSERT INTO final_report_rows(
             report_id, source_row_id, work_date, vendor_name,
@@ -1376,7 +1802,7 @@ def _insert_final_report_row(
         """,
         (
             report_id,
-            row.row_id,
+            source_row_id,
             row.work_date.isoformat(),  # type: ignore[union-attr]
             row.vendor_name,
             vendor_orders.get(str(row.vendor_name).casefold(), 2_147_483_647),
@@ -1390,13 +1816,30 @@ def _insert_final_report_row(
             _decimal_to_db(row.confirmed_cumulative_man_day),
         ),
     )
+    snapshot_row_id = int(cursor.lastrowid)
+    if not source_row_ids:
+        raise ValueError("최종 보고서 행의 원본 행 ID가 누락되었습니다.")
+    conn.executemany(
+        """
+        INSERT INTO final_report_row_sources(snapshot_row_id, source_row_id)
+        VALUES (?, ?)
+        """,
+        [
+            (snapshot_row_id, contributor_id)
+            for contributor_id in source_row_ids
+        ],
+    )
 
 
-def _final_report_row_from_db(row: sqlite3.Row) -> StoredFinalReportRow:
+def _final_report_row_from_db(
+    row: sqlite3.Row,
+    source_row_ids: tuple[int, ...] = (),
+) -> StoredFinalReportRow:
+    legacy_source_row_id = int(row["source_row_id"])
     return StoredFinalReportRow(
         snapshot_row_id=int(row["snapshot_row_id"]),
         report_id=int(row["report_id"]),
-        source_row_id=int(row["source_row_id"]),
+        source_row_id=legacy_source_row_id,
         work_date=date.fromisoformat(str(row["work_date"])),
         vendor_name=str(row["vendor_name"]),
         vendor_sort_order=int(row["vendor_sort_order"]),
@@ -1416,6 +1859,7 @@ def _final_report_row_from_db(row: sqlite3.Row) -> StoredFinalReportRow:
         confirmed_cumulative_man_day=Decimal(
             str(row["confirmed_cumulative_man_day"])
         ),
+        source_row_ids=source_row_ids or (legacy_source_row_id,),
     )
 
 
@@ -1468,6 +1912,16 @@ def _decimal_to_db(value: object) -> str | None:
 
 def _decimal_from_db(value: object) -> Decimal | None:
     return None if value is None else Decimal(str(value))
+
+
+def _one_decimal_man_day(value: object) -> Decimal:
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("누적 공수는 숫자여야 합니다.") from exc
+    if not parsed.is_finite() or parsed < 0:
+        raise ValueError("누적 공수는 0 이상의 유한한 숫자여야 합니다.")
+    return parsed.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
 
 
 def _issue_codes_to_db(value: object) -> str:

@@ -150,6 +150,37 @@ def test_review_grid_action_buttons_explain_their_effects():
     assert buttons["제외"].toolTip()
 
 
+def test_review_grid_exclusion_action_toggles_label_and_requested_state():
+    _app()
+    grid = ReviewGridWidget(
+        [
+            _row(101, included=True),
+            _row(
+                102,
+                included=False,
+                review_status=ReviewStatus.EXCLUDED,
+            ),
+        ]
+    )
+    requested: list[tuple[int, bool]] = []
+    grid.inclusion_requested.connect(
+        lambda row_id, included: requested.append((row_id, included))
+    )
+
+    included_buttons = {
+        button.text(): button
+        for button in grid.cellWidget(0, 17).findChildren(QToolButton)
+    }
+    excluded_buttons = {
+        button.text(): button
+        for button in grid.cellWidget(1, 17).findChildren(QToolButton)
+    }
+    included_buttons["제외"].click()
+    excluded_buttons["제외 취소"].click()
+
+    assert requested == [(101, False), (102, True)]
+
+
 def _row(
     row_id: int,
     *,

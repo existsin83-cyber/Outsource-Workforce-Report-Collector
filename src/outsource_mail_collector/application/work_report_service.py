@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import unicodedata
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable
@@ -27,8 +26,10 @@ from outsource_mail_collector.domain.work_report import (
     man_day_basis,
 )
 from outsource_mail_collector.infrastructure.db.repository import (
+    CumulativeBaseline,
     SQLiteRepository,
     StoredWorkReportRow,
+    normalize_tracking_no,
 )
 
 
@@ -55,6 +56,7 @@ _RECALCULATION_TRIGGER_FIELDS = {
     "night_headcount",
     "reported_daily_man_day",
     "reported_cumulative_man_day",
+    "confirmed_daily_man_day",
 }
 _RECALCULATED_ISSUE_CODES = {
     WorkReportIssueCode.DATE_UNRESOLVED,
@@ -152,6 +154,10 @@ class WorkReportService:
                     **values,
                 )
             )
+        for tracking_no in {
+            row.tracking_no for row in stored_rows if row.tracking_no
+        }:
+            self._recalculate_tracking_series(tracking_no)
         self._mark_unresolved_duplicates()
         return [
             work_report_row_from_stored(
@@ -161,30 +167,66 @@ class WorkReportService:
         ]
 
     def list_rows(
-        self, date_from: date, date_to: date
+        self,
+        date_from: date,
+        date_to: date,
+        *,
+        include_deleted: bool = False,
     ) -> WorkReportRangeResult:
         rows = tuple(
             work_report_row_from_stored(row)
             for row in self._repository.list_work_report_rows(
-                date_from, date_to
+                date_from, date_to, include_deleted=include_deleted
             )
         )
         blocking_count = sum(
             bool(set(row.issue_codes) & _BLOCKING_CODES)
             for row in rows
-            if row.included
+            if row.included and row.deleted_at is None
         )
         warning_count = sum(
             bool(row.issue_codes)
             and not bool(set(row.issue_codes) & _BLOCKING_CODES)
             for row in rows
-            if row.included
+            if row.included and row.deleted_at is None
         )
         return WorkReportRangeResult(
             rows=rows,
             warning_count=warning_count,
             blocking_count=blocking_count,
         )
+
+    def save_cumulative_baseline(
+        self,
+        *,
+        tracking_no: str,
+        effective_through_date: date,
+        cumulative_man_day: Decimal,
+        resolution_note: str,
+    ) -> CumulativeBaseline:
+        """Persist an explicit ledger seed and refresh its complete series."""
+
+        if not resolution_note.strip():
+            raise ValueError("누적 기준 변경 사유를 입력해 주세요.")
+        with self._repository.transaction():
+            baseline = self._repository.save_cumulative_baseline(
+                tracking_no=tracking_no,
+                effective_through_date=effective_through_date,
+                cumulative_man_day=cumulative_man_day,
+                resolution_note=resolution_note,
+            )
+            self._recalculate_tracking_series(
+                baseline.normalized_tracking_no
+            )
+        return baseline
+
+    def get_cumulative_baseline(
+        self, tracking_no: str
+    ) -> CumulativeBaseline | None:
+        return self._repository.get_cumulative_baseline(tracking_no)
+
+    def list_cumulative_baselines(self) -> list[CumulativeBaseline]:
+        return self._repository.list_cumulative_baselines()
 
     def add_manual_row(
         self,
@@ -225,6 +267,8 @@ class WorkReportService:
         )
         values["resolution_note"] = resolution_note.strip()
         row = self._repository.create_manual_report_row(**values)
+        if row.tracking_no:
+            self._recalculate_tracking_series(row.tracking_no)
         self._mark_unresolved_duplicates()
         return work_report_row_from_stored(
             self._repository.get_work_report_row(row.row_id)
@@ -239,14 +283,20 @@ class WorkReportService:
     ) -> WorkReportRow:
         if not resolution_note.strip():
             raise ValueError("변경 사유를 입력해 주세요.")
+        current = self._repository.get_work_report_row(row_id)
+        old_tracking_no = current.tracking_no
         if set(changes) & _RECALCULATION_TRIGGER_FIELDS:
-            current = self._repository.get_work_report_row(row_id)
             changes = self._recalculate_updated_values(current, changes)
-        row = self._repository.update_work_report_row(
-            row_id, changes, resolution_note=resolution_note
+        with self._repository.transaction():
+            row = self._repository.update_work_report_row(
+                row_id, changes, resolution_note=resolution_note
+            )
+            for tracking_no in {old_tracking_no, row.tracking_no} - {None}:
+                self._recalculate_tracking_series(str(tracking_no))
+            self._mark_unresolved_duplicates()
+        return work_report_row_from_stored(
+            self._repository.get_work_report_row(row_id)
         )
-        self._mark_unresolved_duplicates()
-        return work_report_row_from_stored(row)
 
     def refresh_work_order_mappings(self) -> list[WorkReportRow]:
         """Reapply master data to eligible unconfirmed mail-derived rows."""
@@ -275,6 +325,11 @@ class WorkReportService:
             )
             refreshed_ids.append(updated.row_id)
         if refreshed_ids:
+            for tracking_no in {
+                self._repository.get_work_report_row(row_id).tracking_no
+                for row_id in refreshed_ids
+            } - {None}:
+                self._recalculate_tracking_series(str(tracking_no))
             self._mark_unresolved_duplicates()
         return [
             work_report_row_from_stored(
@@ -386,6 +441,10 @@ class WorkReportService:
             review_status=current.review_status,
         )
         values.pop("resolution_note")
+        if "confirmed_daily_man_day" in changes:
+            values["confirmed_daily_man_day"] = _optional_man_day(
+                changes["confirmed_daily_man_day"]
+            )
         for field_name, value in changes.items():
             if (
                 field_name not in _RECALCULATION_TRIGGER_FIELDS
@@ -406,6 +465,15 @@ class WorkReportService:
         blockers = set(row.issue_codes) & _STRUCTURAL_BLOCKERS
         if blockers:
             raise ValueError("구조적 오류를 먼저 해결해야 행을 확정할 수 있습니다.")
+        baseline = self._repository.get_cumulative_baseline(
+            row.tracking_no or ""
+        )
+        if (
+            baseline is None
+            or row.work_date is None
+            or row.work_date <= baseline.effective_through_date
+        ):
+            raise ValueError("명시적인 누적 기준을 먼저 등록해 주세요.")
         confirmed = self._repository.confirm_work_report_row(
             row_id,
             confirmed_daily_man_day=quantize_man_day(
@@ -416,19 +484,139 @@ class WorkReportService:
             ),
             resolution_note=resolution_note,
         )
-        self._recalculate_following_rows(confirmed)
-        return work_report_row_from_stored(confirmed)
+        if confirmed.tracking_no:
+            self._recalculate_tracking_series(
+                confirmed.tracking_no,
+                preserve_confirmed_row_id=confirmed.row_id,
+            )
+        return work_report_row_from_stored(
+            self._repository.get_work_report_row(row_id)
+        )
 
     def set_included(
         self, row_id: int, included: bool, *, resolution_note: str
     ) -> WorkReportRow:
         status = ReviewStatus.NORMAL if included else ReviewStatus.EXCLUDED
-        stored = self._repository.update_work_report_row(
-            row_id,
-            {"included": included, "review_status": status},
-            resolution_note=resolution_note,
+        with self._repository.transaction():
+            stored = self._repository.update_work_report_row(
+                row_id,
+                {"included": included, "review_status": status},
+                resolution_note=resolution_note,
+            )
+            if stored.tracking_no:
+                self._recalculate_tracking_series(stored.tracking_no)
+        return work_report_row_from_stored(
+            self._repository.get_work_report_row(row_id)
         )
-        return work_report_row_from_stored(stored)
+
+    def soft_delete_row(
+        self, row_id: int, *, resolution_note: str
+    ) -> WorkReportRow:
+        with self._repository.transaction():
+            stored = self._repository.soft_delete_work_report_row(
+                row_id, resolution_note=resolution_note
+            )
+            if stored.tracking_no:
+                self._recalculate_tracking_series(stored.tracking_no)
+        return work_report_row_from_stored(
+            self._repository.get_work_report_row(row_id)
+        )
+
+    def soft_delete_rows(
+        self, row_ids: Iterable[int], *, resolution_note: str
+    ) -> list[WorkReportRow]:
+        """Soft-delete selected rows atomically and recalculate each series once."""
+
+        ids, note = _validated_bulk_request(
+            row_ids, resolution_note, action_label="삭제"
+        )
+        with self._repository.transaction():
+            stored_rows = self._validate_bulk_rows(
+                ids, require_deleted=False, action_label="삭제"
+            )
+            for row_id in ids:
+                self._repository.soft_delete_work_report_row(
+                    row_id, resolution_note=note
+                )
+            self._recalculate_affected_tracking_series(stored_rows)
+        return [
+            work_report_row_from_stored(
+                self._repository.get_work_report_row(row_id)
+            )
+            for row_id in ids
+        ]
+
+    def restore_row(
+        self, row_id: int, *, resolution_note: str
+    ) -> WorkReportRow:
+        with self._repository.transaction():
+            stored = self._repository.restore_work_report_row(
+                row_id, resolution_note=resolution_note
+            )
+            if stored.tracking_no:
+                self._recalculate_tracking_series(stored.tracking_no)
+        return work_report_row_from_stored(
+            self._repository.get_work_report_row(row_id)
+        )
+
+    def restore_rows(
+        self, row_ids: Iterable[int], *, resolution_note: str
+    ) -> list[WorkReportRow]:
+        """Restore selected rows atomically and recalculate each series once."""
+
+        ids, note = _validated_bulk_request(
+            row_ids, resolution_note, action_label="복구"
+        )
+        with self._repository.transaction():
+            stored_rows = self._validate_bulk_rows(
+                ids, require_deleted=True, action_label="복구"
+            )
+            for row_id in ids:
+                self._repository.restore_work_report_row(
+                    row_id, resolution_note=note
+                )
+            self._recalculate_affected_tracking_series(stored_rows)
+        return [
+            work_report_row_from_stored(
+                self._repository.get_work_report_row(row_id)
+            )
+            for row_id in ids
+        ]
+
+    def _validate_bulk_rows(
+        self,
+        row_ids: list[int],
+        *,
+        require_deleted: bool,
+        action_label: str,
+    ) -> list[StoredWorkReportRow]:
+        rows: list[StoredWorkReportRow] = []
+        for row_id in row_ids:
+            try:
+                row = self._repository.get_work_report_row(row_id)
+            except KeyError as exc:
+                raise ValueError(
+                    f"{action_label}할 행을 찾을 수 없습니다: {row_id}"
+                ) from exc
+            if require_deleted and row.deleted_at is None:
+                raise ValueError(f"이미 복구된 행입니다: {row_id}")
+            if not require_deleted and row.deleted_at is not None:
+                raise ValueError(f"이미 삭제된 행입니다: {row_id}")
+            rows.append(row)
+        return rows
+
+    def _recalculate_affected_tracking_series(
+        self, rows: Iterable[StoredWorkReportRow]
+    ) -> None:
+        tracking_by_normalized = {
+            normalize_tracking_no(row.tracking_no or ""): row.tracking_no
+            for row in rows
+            if normalize_tracking_no(row.tracking_no or "")
+        }
+        for normalized in sorted(tracking_by_normalized):
+            tracking_no = tracking_by_normalized[normalized]
+            if tracking_no:
+                self._recalculate_tracking_series(tracking_no)
 
     def resolve_duplicate(
         self,
@@ -437,11 +625,19 @@ class WorkReportService:
         *,
         resolution_note: str,
     ) -> list[WorkReportRow]:
-        return [
-            work_report_row_from_stored(row)
-            for row in self._repository.resolve_duplicate_rows(
+        with self._repository.transaction():
+            stored_rows = self._repository.resolve_duplicate_rows(
                 row_ids, decision, resolution_note=resolution_note
             )
+            for tracking_no in {
+                row.tracking_no for row in stored_rows if row.tracking_no
+            }:
+                self._recalculate_tracking_series(tracking_no)
+        return [
+            work_report_row_from_stored(
+                self._repository.get_work_report_row(row.row_id)
+            )
+            for row in stored_rows
         ]
 
     def _calculate_values(
@@ -462,6 +658,8 @@ class WorkReportService:
         review_status: ReviewStatus,
     ) -> dict[str, Any]:
         issues = _known_issue_codes(date_issue_codes)
+        if review_status is ReviewStatus.DUPLICATE_SUSPECTED:
+            _append_issue(issues, WorkReportIssueCode.DUPLICATE_UNRESOLVED)
         for issue in mapping_issue_codes:
             _append_issue(issues, issue)
         series_key = build_cumulative_series_key(
@@ -568,6 +766,8 @@ class WorkReportService:
             cumulative_calculated = cumulative.calculated
             confirmed_cumulative = cumulative.confirmed_candidate
             for issue in cumulative.issues:
+                if issue is WorkReportIssueCode.CUMULATIVE_BASELINE_CONFIRMATION:
+                    issue = WorkReportIssueCode.CUMULATIVE_BASELINE_REQUIRED
                 if (
                     issue is WorkReportIssueCode.CUMULATIVE_MISSING
                     and (
@@ -609,33 +809,55 @@ class WorkReportService:
     ) -> Decimal | None:
         if work_date is None:
             return None
+        baseline = self._repository.get_cumulative_baseline(series_key)
+        if (
+            baseline is None
+            or work_date <= baseline.effective_through_date
+        ):
+            return None
         candidates = [
             row
             for row in self._repository.list_work_report_rows(
-                date.min, work_date
+                baseline.effective_through_date, work_date
             )
-            if row.cumulative_series_key == series_key
+            if normalize_tracking_no(row.tracking_no or "") == series_key
             and row.work_date is not None
+            and row.work_date > baseline.effective_through_date
             and row.work_date < work_date
-            and row.confirmed_cumulative_man_day is not None
             and row.included
         ]
-        if not candidates:
-            return None
         candidates.sort(key=lambda row: (row.work_date or date.min, row.row_id))
-        return candidates[-1].confirmed_cumulative_man_day
+        running = baseline.cumulative_man_day
+        for row in candidates:
+            if row.confirmed_daily_man_day is None:
+                return None
+            running = quantize_man_day(running + row.confirmed_daily_man_day)
+        return running
 
     def _mark_unresolved_duplicates(self) -> None:
         rows = self._repository.list_work_report_rows(date.min, date.max)
-        groups: dict[tuple[date, str], list[StoredWorkReportRow]] = {}
+        groups: dict[
+            tuple[date, str, str, str], list[StoredWorkReportRow]
+        ] = {}
         for row in rows:
             if row.work_date is None or row.cumulative_series_key is None:
                 continue
             groups.setdefault(
-                (row.work_date, row.cumulative_series_key), []
+                (
+                    row.work_date,
+                    (_clean_text(row.vendor_name) or "").casefold(),
+                    normalize_tracking_no(row.tracking_no or ""),
+                    (_clean_text(row.equipment_name) or "").casefold(),
+                ),
+                [],
             ).append(row)
         for candidates in groups.values():
             if len(candidates) < 2:
+                continue
+            if not any(
+                WorkReportIssueCode.DUPLICATE_UNRESOLVED in row.issue_codes
+                for row in candidates
+            ):
                 continue
             already_resolved = (
                 sum(row.included for row in candidates) <= 1
@@ -662,64 +884,121 @@ class WorkReportService:
                     resolution_note="중복 또는 수정 보고 후보 자동 감지",
                 )
 
-    def _recalculate_following_rows(
-        self, confirmed_row: StoredWorkReportRow
+    def _recalculate_tracking_series(
+        self,
+        tracking_no: str,
+        *,
+        preserve_confirmed_row_id: int | None = None,
     ) -> None:
-        if (
-            confirmed_row.work_date is None
-            or confirmed_row.cumulative_series_key is None
-            or confirmed_row.confirmed_cumulative_man_day is None
-        ):
+        normalized_tracking_no = normalize_tracking_no(tracking_no)
+        if not normalized_tracking_no:
             return
+        baseline = self._repository.get_cumulative_baseline(
+            normalized_tracking_no
+        )
         rows = [
             row
-            for row in self._repository.list_work_report_rows(
-                confirmed_row.work_date, date.max
-            )
-            if row.cumulative_series_key
-            == confirmed_row.cumulative_series_key
-            and row.work_date is not None
-            and row.work_date > confirmed_row.work_date
-            and row.included
+            for row in self._repository.list_all_work_report_rows()
+            if normalize_tracking_no(row.tracking_no or "")
+            == normalized_tracking_no
         ]
         rows.sort(key=lambda row: (row.work_date or date.max, row.row_id))
-        prior = confirmed_row.confirmed_cumulative_man_day
         cumulative_codes = {
             WorkReportIssueCode.CUMULATIVE_MISSING,
             WorkReportIssueCode.CUMULATIVE_MISMATCH,
             WorkReportIssueCode.CUMULATIVE_BASELINE_CONFIRMATION,
             WorkReportIssueCode.CUMULATIVE_BASELINE_REQUIRED,
         }
+        running = baseline.cumulative_man_day if baseline is not None else None
+        ledger_blocked = baseline is None
         for row in rows:
-            if row.confirmed_daily_man_day is None:
-                break
-            result = self._calculation.calculate_cumulative(
-                prior_confirmed_cumulative=prior,
-                confirmed_daily=row.confirmed_daily_man_day,
-                reported_cumulative=row.reported_cumulative_man_day,
-            )
             issues = [
                 issue
                 for issue in row.issue_codes
                 if issue not in cumulative_codes
             ]
-            for issue in result.issues:
-                _append_issue(issues, issue)
-            updated = self._repository.update_work_report_row(
-                row.row_id,
+            changes: dict[str, Any] = {}
+            if row.cumulative_series_key != normalized_tracking_no:
+                changes["cumulative_series_key"] = normalized_tracking_no
+            if (
+                not row.included
+                or row.work_date is None
+            ):
+                self._persist_cumulative_changes(row, changes)
+                continue
+            if (
+                baseline is not None
+                and row.work_date <= baseline.effective_through_date
+            ):
+                changes.update(
+                    {
+                        "calculated_cumulative_man_day": None,
+                        "confirmed_cumulative_man_day": None,
+                        "issue_codes": tuple(issues),
+                        "warning_confirmed": not issues,
+                    }
+                )
+                self._persist_cumulative_changes(row, changes)
+                continue
+
+            calculated: Decimal | None = None
+            confirmed: Decimal | None = None
+            if ledger_blocked or running is None:
+                _append_issue(
+                    issues, WorkReportIssueCode.CUMULATIVE_BASELINE_REQUIRED
+                )
+            elif row.confirmed_daily_man_day is None:
+                ledger_blocked = True
+            else:
+                running = quantize_man_day(
+                    running + row.confirmed_daily_man_day
+                )
+                calculated = running
+                reported = row.reported_cumulative_man_day
+                if reported is None:
+                    confirmed = running
+                    _append_issue(
+                        issues, WorkReportIssueCode.CUMULATIVE_MISSING
+                    )
+                elif reported != running:
+                    _append_issue(
+                        issues, WorkReportIssueCode.CUMULATIVE_MISMATCH
+                    )
+                else:
+                    confirmed = reported
+
+            if row.row_id == preserve_confirmed_row_id:
+                confirmed = row.confirmed_cumulative_man_day
+            changes.update(
                 {
-                    "calculated_cumulative_man_day": result.calculated,
-                    "confirmed_cumulative_man_day": (
-                        result.confirmed_candidate
-                    ),
+                    "calculated_cumulative_man_day": calculated,
+                    "confirmed_cumulative_man_day": confirmed,
                     "issue_codes": tuple(issues),
-                    "warning_confirmed": not issues,
-                },
-                resolution_note="이전 확정 누적 변경에 따른 자동 재계산",
+                    "warning_confirmed": (
+                        row.warning_confirmed
+                        if row.row_id == preserve_confirmed_row_id
+                        else not issues
+                    ),
+                }
             )
-            if updated.confirmed_cumulative_man_day is None:
-                break
-            prior = updated.confirmed_cumulative_man_day
+            self._persist_cumulative_changes(row, changes)
+
+    def _persist_cumulative_changes(
+        self,
+        row: StoredWorkReportRow,
+        proposed: dict[str, Any],
+    ) -> None:
+        changes = {
+            field_name: value
+            for field_name, value in proposed.items()
+            if getattr(row, field_name) != value
+        }
+        if changes:
+            self._repository.update_work_report_row(
+                row.row_id,
+                changes,
+                resolution_note="누적 원장 자동 재계산",
+            )
 
 
 def build_cumulative_series_key(
@@ -727,23 +1006,9 @@ def build_cumulative_series_key(
     tracking_no: str | None,
     equipment_name: str | None,
 ) -> str | None:
-    vendor = _normalize_text(vendor_name)
-    if not vendor:
-        return None
-    tracking = "".join(_normalize_text(tracking_no).split()).upper()
-    if tracking:
-        return f"{vendor}|T:{tracking}"
-    equipment = _normalize_text(equipment_name)
-    if equipment:
-        return f"{vendor}|E:{equipment}"
-    return None
-
-
-def _normalize_text(value: str | None) -> str:
-    if not value:
-        return ""
-    normalized = unicodedata.normalize("NFKC", value)
-    return " ".join(normalized.split()).casefold()
+    del vendor_name, equipment_name
+    tracking = normalize_tracking_no(tracking_no or "")
+    return tracking or None
 
 
 def _clean_text(value: str | None) -> str | None:
@@ -809,6 +1074,25 @@ def _optional_man_day(value: object | None) -> Decimal | None:
     if not parsed.is_finite() or parsed < 0:
         raise ValueError("공수는 0 이상의 유한한 숫자여야 합니다.")
     return quantize_man_day(parsed)
+
+
+def _validated_bulk_request(
+    row_ids: Iterable[int],
+    resolution_note: str,
+    *,
+    action_label: str,
+) -> tuple[list[int], str]:
+    note = resolution_note.strip()
+    if not note:
+        raise ValueError(f"{action_label} 사유를 입력해 주세요.")
+    ids = list(row_ids)
+    if not ids:
+        raise ValueError(f"{action_label}할 행을 선택해 주세요.")
+    if any(type(row_id) is not int or row_id <= 0 for row_id in ids):
+        raise ValueError(f"{action_label}할 행 ID가 올바르지 않습니다.")
+    if len(set(ids)) != len(ids):
+        raise ValueError(f"{action_label}할 행 ID가 중복되었습니다.")
+    return ids, note
 
 
 def _known_issue_codes(values: tuple[str, ...]) -> list[WorkReportIssueCode]:

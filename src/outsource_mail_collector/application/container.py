@@ -24,6 +24,9 @@ from outsource_mail_collector.application.report_renderer import (
 )
 from outsource_mail_collector.application.review_service import ReviewService
 from outsource_mail_collector.application.settings_service import SettingsService
+from outsource_mail_collector.application.tracking_dashboard_service import (
+    TrackingDashboardService,
+)
 from outsource_mail_collector.application.work_report_service import (
     WorkReportService,
 )
@@ -38,5 +41,6 @@ class ApplicationServices:
     settings_service: SettingsService
     man_day_calculation_service: ManDayCalculationService
     work_report_service: WorkReportService
+    tracking_dashboard_service: TrackingDashboardService
     final_report_service: FinalReportService
     report_renderer: HtmlReportRenderer

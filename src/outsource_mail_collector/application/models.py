@@ -87,6 +87,7 @@ class WorkReportRow:
     warning_confirmed: bool
     resolution_note: str | None
     night_headcount: int | None = None
+    deleted_at: str | None = None
 
     @property
     def per_person_display(self) -> str:
@@ -110,6 +111,60 @@ class FinalizationBlocker:
 
 
 @dataclass(frozen=True)
+class TrackingDailyAggregate:
+    """Confirmed source rows collapsed by work date and Tracking No."""
+
+    row_id: int
+    source_row_ids: tuple[int, ...]
+    work_date: date | None
+    normalized_tracking_no: str
+    tracking_no: str | None
+    vendor_name: str | None
+    vendor_sort_order: int
+    equipment_name: str | None
+    business_team: str | None
+    actual_headcount: int | None
+    night_headcount: int | None
+    per_person_man_day: Decimal | None
+    man_day_basis: str
+    confirmed_daily_man_day: Decimal | None
+    reported_cumulative_man_day: Decimal | None
+    calculated_cumulative_man_day: Decimal | None
+    confirmed_cumulative_man_day: Decimal | None
+    blockers: tuple[FinalizationBlocker, ...]
+
+    @property
+    def can_confirm(self) -> bool:
+        return not self.blockers
+
+
+@dataclass(frozen=True)
+class TrackingDashboardSummary:
+    """Lifetime projection for one normalized Tracking No."""
+
+    normalized_tracking_no: str
+    tracking_no: str
+    vendor_name: str | None
+    equipment_name: str | None
+    business_team: str | None
+    latest_work_date: date | None
+    latest_actual_headcount: int | None
+    latest_night_headcount: int | None
+    latest_man_day_basis: str
+    latest_confirmed_daily_man_day: Decimal | None
+    latest_reported_cumulative_man_day: Decimal | None
+    latest_calculated_cumulative_man_day: Decimal | None
+    latest_confirmed_cumulative_man_day: Decimal | None
+    initial_cumulative_man_day: Decimal | None
+    source_row_ids: tuple[int, ...]
+    blockers: tuple[FinalizationBlocker, ...]
+
+    @property
+    def can_confirm(self) -> bool:
+        return not self.blockers
+
+
+@dataclass(frozen=True)
 class FinalReportRow:
     source_row_id: int
     work_date: date
@@ -123,13 +178,14 @@ class FinalReportRow:
     man_day_basis: str
     confirmed_daily_man_day: Decimal
     confirmed_cumulative_man_day: Decimal
+    source_row_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
 class FinalReportPreview:
     date_from: date
     date_to: date
-    rows: tuple[WorkReportRow, ...]
+    rows: tuple[TrackingDailyAggregate, ...]
     blockers: tuple[FinalizationBlocker, ...]
 
     @property
@@ -215,6 +271,7 @@ def work_report_row_from_stored(stored: StoredWorkReportRow) -> WorkReportRow:
         included=stored.included,
         warning_confirmed=stored.warning_confirmed,
         resolution_note=stored.resolution_note,
+        deleted_at=stored.deleted_at,
     )
 
 
@@ -232,6 +289,7 @@ def final_report_row_from_stored(stored: StoredFinalReportRow) -> FinalReportRow
         man_day_basis=stored.man_day_basis,
         confirmed_daily_man_day=stored.confirmed_daily_man_day,
         confirmed_cumulative_man_day=stored.confirmed_cumulative_man_day,
+        source_row_ids=stored.source_row_ids,
     )
 
 

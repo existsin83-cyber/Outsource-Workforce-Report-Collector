@@ -34,7 +34,6 @@ _HEADERS = (
     "장비명",
     "사업팀",
     "실제 작업인원",
-    "야근 인원",
     "인당 공수",
     "투입 공수",
     "누적 공수",
@@ -149,8 +148,7 @@ def _preview_table(rows: tuple[WorkReportRow, ...]) -> QTableWidget:
             row.equipment_name or "",
             row.business_team or "",
             "" if row.actual_headcount is None else str(row.actual_headcount),
-            "" if row.night_headcount is None else str(row.night_headcount),
-            _decimal_text(row.per_person_man_day),
+            _basis_text(row),
             _decimal_text(row.confirmed_daily_man_day),
             _decimal_text(row.confirmed_cumulative_man_day),
         )
@@ -166,3 +164,10 @@ def _preview_table(rows: tuple[WorkReportRow, ...]) -> QTableWidget:
 
 def _decimal_text(value: object | None) -> str:
     return "" if value is None else f"{value:.1f}"
+
+
+def _basis_text(row: object) -> str:
+    basis = getattr(row, "man_day_basis", None)
+    if basis:
+        return str(basis)
+    return str(getattr(row, "per_person_display", ""))

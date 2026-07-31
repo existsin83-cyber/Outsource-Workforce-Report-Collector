@@ -552,8 +552,12 @@ SQLite 파일: `app_data.db`
 
 - `ManDayCalculationService`: `Decimal` 기반 투입·누적 공수 계산과
   보고값/계산값 비교
-- `WorkReportService`: 추출 행과 수동 행 동기화, 누적 계열 연결, 중복 후보 관리
-- `FinalReportService`: 차단 조건 재검증, 업체 설정 순서 정렬, 불변 스냅샷 생성
+- `WorkReportService`: 추출 행과 수동 행 동기화, Tracking No. 누적 기준·포함·
+  소프트 삭제/복구와 감사 이력 관리
+- `TrackingDashboardService`: 정규화 Tracking No.별 평생 요약, 날짜별 집계,
+  원본 행 드릴다운과 누적 차단 사유 제공
+- `FinalReportService`: Tracking No. + 작업일 집계 차단 조건 재검증, 기여 원본 행
+  추적이 가능한 불변 스냅샷 생성
 - `HtmlReportRenderer`: 저장소나 COM에 의존하지 않는 HTML/일반 텍스트 렌더링
 
 작업일 판정은 `parsing/work_date_parser.py`의 순수 함수로 수행한다. 추출 파이프라인
@@ -565,8 +569,11 @@ SQLite 파일: `app_data.db`
 - `processed_mails`: 제목·본문 날짜 근거, 날짜 출처, 날짜 경고, 확인 여부
 - `vendors.sort_order`: 최종 보고서 업체 정렬 순서
 - `work_report_rows`: 메일/수동 취합 행과 보고·계산·확정 공수
+- `cumulative_baselines`: Tracking No.별 명시적 기준 적용 종료일, 누적값, 사유와
+  감사 시각
 - `final_reports`: 확정 범위, 해시, 확정·복사·무효화 시각
-- `final_report_rows`: 확정 시점의 출력 행 스냅샷
+- `final_report_rows`: Tracking No. + 작업일 집계 출력 행 스냅샷
+- `final_report_row_sources`: 집계 스냅샷 행과 모든 기여 원본 행의 연결
 
 공수는 SQLite `TEXT`에 정규화된 10진 문자열로 저장한다. 기존 테이블은 삭제하거나
 재작성하지 않고 `PRAGMA table_info` 기반 additive migration으로 확장한다.
@@ -577,6 +584,10 @@ SQLite 파일: `app_data.db`
 
 메일 수신 조회일과 작업일 시작·종료 범위를 별도 컨트롤로 제공한다. 검토 표는
 메일·계산·확정 투입/누적값을 동시에 보여주고 문제 행을 개별 확인하게 한다.
+검토 표는 원본 행 검토용으로 유지하고, Tracking No.별 평생 누적·날짜별 집계·기준값
+설정·복구는 별도 대시보드에서 제공한다. 포함 상태는 가역 토글이며, 다중 소프트
+삭제/복구는 모든 대상 검증·스냅샷 무효화·감사 기록·재계산을 하나의 트랜잭션으로
+처리한다.
 최종 미리보기에서 전체 확인이 끝난 뒤에만 복사를 활성화한다.
 
 클립보드는 Qt `QMimeData`에 `text/html`과 `text/plain`을 함께 기록한다. Outlook
@@ -594,7 +605,12 @@ SQLite 파일: `app_data.db`
   야근 인원은 0 이상의 정수여야 하고 야근 인원은 실제 작업인원을 초과할 수
   없다.
 - 인당 공수 표시는 야근 인원에 따라 `1.0`, `1.5`, `혼합`으로 파생한다.
-  최종 스냅샷과 HTML·일반 텍스트 표는 `야근 인원` 열을 보존한다.
+  원본 검토와 대시보드 드릴다운은 야근 인원을 보존한다. 최종 스냅샷과 HTML·일반
+  텍스트 표는 `일자, 거래처명, Tracking No., 장비명, 사업팀, 실제 작업인원, 인당
+  공수, 투입 공수, 누적 공수`의 아홉 열만 사용한다.
+- 누적 계열은 정규화 Tracking No.만으로 결정한다. 명시적 기준 적용 종료일과 누적값
+  다음의 활성 행을 작업일과 원본 행 순서로 계산하며, 같은 작업일·Tracking No. 행은
+  당일 합계 하나로 투영한다. 보고 누적과 계산 누적의 불일치는 최종화를 차단한다.
 - `WORK_ORDER_UNREGISTERED`와 `NIGHT_HEADCOUNT_INVALID`는 최종화를 차단한다.
   장비명 불일치 경고는 명시적 검토 후 확정할 수 있다.
 - 메일 표가 HTML table인지 붙여넣기 이미지인지

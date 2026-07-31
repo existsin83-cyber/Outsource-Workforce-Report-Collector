@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import date
+from dataclasses import replace
 from decimal import Decimal
 from types import SimpleNamespace
 
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QToolButton
 
 import outsource_mail_collector.ui.main_window as main_window_module
 from outsource_mail_collector.application.models import (
@@ -238,6 +240,272 @@ def test_excel_button_shows_preparation_notice(monkeypatch):
     assert "실 워크북 확보 후 사용할 수 있습니다." in shown[0][1]
 
 
+def test_row_inclusion_toggle_calls_service_and_reloads():
+    _app()
+    services = _services()
+    window = MainWindow(services)
+    buttons = {
+        button.text(): button
+        for button in window.review_grid.cellWidget(0, 17).findChildren(
+            QToolButton
+        )
+    }
+
+    buttons["제외"].click()
+
+    assert services.work_report_service.inclusion_calls == [
+        (1, False, "사용자 반영 제외")
+    ]
+    assert window.review_grid.item(0, 16).text() == "제외"
+    buttons = {
+        button.text(): button
+        for button in window.review_grid.cellWidget(0, 17).findChildren(
+            QToolButton
+        )
+    }
+    buttons["제외 취소"].click()
+    assert services.work_report_service.inclusion_calls[-1] == (
+        1,
+        True,
+        "사용자 반영 제외 취소",
+    )
+
+
+def test_bulk_soft_delete_confirms_outlook_is_untouched_and_reloads(monkeypatch):
+    _app()
+    services = _services()
+    services.work_report_service.rows.append(_row(2))
+    window = MainWindow(services)
+    for row_index in range(2):
+        window.review_grid.item(row_index, 0).setCheckState(
+            Qt.CheckState.Checked
+        )
+    initial_reload_count = services.work_report_service.list_calls
+    questions: list[str] = []
+
+    def question(_parent, _title, text, *_args):
+        questions.append(text)
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", question)
+
+    window.delete_button.click()
+
+    assert "Outlook 메일은 삭제하거나 변경하지 않습니다" in questions[0]
+    assert "대시보드와 최종 표" in questions[0]
+    assert services.work_report_service.bulk_delete_calls == [
+        ([1, 2], "사용자 선택 삭제")
+    ]
+    assert window.review_grid.rowCount() == 0
+    assert services.work_report_service.list_calls == initial_reload_count + 1
+
+
+def test_bulk_soft_delete_empty_selection_and_cancel_do_not_mutate(monkeypatch):
+    _app()
+    services = _services()
+    window = MainWindow(services)
+    messages: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda _parent, _title, text: messages.append(text),
+    )
+
+    window.delete_button.click()
+
+    assert "삭제할 행을 선택해 주세요" in messages[0]
+    assert services.work_report_service.bulk_delete_calls == []
+
+    window.review_grid.item(0, 0).setCheckState(
+        Qt.CheckState.Checked
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args: QMessageBox.StandardButton.No,
+    )
+    window.delete_button.click()
+    assert services.work_report_service.bulk_delete_calls == []
+
+
+def test_deleted_row_recovery_restores_selected_rows_and_reloads(monkeypatch):
+    _app()
+    services = _services()
+    deleted = replace(_row(8), deleted_at="2026-07-31T00:00:00+00:00")
+    services.work_report_service.deleted_rows = [deleted]
+    window = MainWindow(services)
+
+    class FakeRecoveryDialog:
+        DialogCode = QDialog.DialogCode
+
+        def __init__(self, rows, parent=None):
+            assert tuple(rows) == (deleted,)
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def selected_row_ids(self):
+            return [8]
+
+        def resolution_note(self):
+            return "잘못 삭제한 행 복구"
+
+    monkeypatch.setattr(
+        main_window_module, "DeletedRowsDialog", FakeRecoveryDialog
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args: QMessageBox.StandardButton.Yes,
+    )
+
+    window.recovery_button.click()
+
+    assert services.work_report_service.bulk_restore_calls == [
+        ([8], "잘못 삭제한 행 복구")
+    ]
+    assert window.review_grid.rowCount() == 2
+
+
+def test_empty_recovery_list_shows_message_without_opening_dialog(
+    monkeypatch,
+):
+    _app()
+    services = _services()
+    window = MainWindow(services)
+    messages: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda _parent, _title, text: messages.append(text),
+    )
+
+    window.recovery_button.click()
+
+    assert messages == ["복구할 삭제 항목이 없습니다."]
+    assert services.work_report_service.bulk_restore_calls == []
+
+
+def test_bulk_delete_service_error_keeps_data_and_does_not_reload(
+    monkeypatch,
+):
+    _app()
+    services = _services()
+    services.work_report_service.rows.append(_row(2))
+    services.work_report_service.bulk_error = ValueError(
+        "두 번째 행 삭제 실패"
+    )
+    window = MainWindow(services)
+    for row_index in range(2):
+        window.review_grid.item(row_index, 0).setCheckState(
+            Qt.CheckState.Checked
+        )
+    initial_reload_count = services.work_report_service.list_calls
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args: QMessageBox.StandardButton.Yes,
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, text: warnings.append(text),
+    )
+
+    window.delete_button.click()
+
+    assert warnings == ["두 번째 행 삭제 실패"]
+    assert [row.row_id for row in services.work_report_service.rows] == [1, 2]
+    assert window.review_grid.rowCount() == 2
+    assert services.work_report_service.list_calls == initial_reload_count
+
+
+def test_bulk_restore_service_error_keeps_data_and_does_not_reload(
+    monkeypatch,
+):
+    _app()
+    services = _services()
+    deleted = replace(_row(8), deleted_at="2026-07-31T00:00:00+00:00")
+    services.work_report_service.deleted_rows = [deleted]
+    services.work_report_service.bulk_error = ValueError(
+        "두 번째 행 복구 실패"
+    )
+    window = MainWindow(services)
+    initial_reload_count = services.work_report_service.list_calls
+    warnings: list[str] = []
+
+    class FakeRecoveryDialog:
+        DialogCode = QDialog.DialogCode
+
+        def __init__(self, rows, parent=None):
+            pass
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def selected_row_ids(self):
+            return [8]
+
+        def resolution_note(self):
+            return "복구 사유"
+
+    monkeypatch.setattr(
+        main_window_module, "DeletedRowsDialog", FakeRecoveryDialog
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args: QMessageBox.StandardButton.Yes,
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, text: warnings.append(text),
+    )
+
+    window.recovery_button.click()
+
+    assert warnings == ["두 번째 행 복구 실패"]
+    assert services.work_report_service.deleted_rows == [deleted]
+    assert window.review_grid.rowCount() == 1
+    assert services.work_report_service.list_calls == initial_reload_count + 1
+
+
+def test_dashboard_button_receives_application_services_and_refresh(monkeypatch):
+    _app()
+    services = _services()
+    window = MainWindow(services)
+    captured: dict[str, object] = {}
+
+    class FakeDashboardDialog:
+        def __init__(
+            self,
+            dashboard_service,
+            work_report_service,
+            refresh_callback,
+            parent=None,
+        ):
+            captured.update(
+                dashboard_service=dashboard_service,
+                work_report_service=work_report_service,
+                refresh_callback=refresh_callback,
+            )
+
+        def exec(self):
+            captured["executed"] = True
+
+    monkeypatch.setattr(
+        main_window_module, "TrackingDashboardDialog", FakeDashboardDialog
+    )
+
+    window.dashboard_button.click()
+
+    assert captured["dashboard_service"] is services.tracking_dashboard_service
+    assert captured["work_report_service"] is services.work_report_service
+    assert captured["executed"] is True
+
+
 class _WorkReportService:
     def __init__(self) -> None:
         self.rows = [_row(1)]
@@ -245,16 +513,75 @@ class _WorkReportService:
         self.update_calls: list[tuple[int, dict, str]] = []
         self.confirm_calls: list[tuple[int, Decimal, Decimal, str]] = []
         self.mapping_refresh_calls = 0
+        self.inclusion_calls: list[tuple[int, bool, str]] = []
+        self.delete_calls: list[tuple[int, str]] = []
+        self.restore_calls: list[tuple[int, str]] = []
+        self.bulk_delete_calls: list[tuple[list[int], str]] = []
+        self.bulk_restore_calls: list[tuple[list[int], str]] = []
+        self.bulk_error: ValueError | None = None
+        self.deleted_rows: list[WorkReportRow] = []
+        self.list_calls = 0
 
-    def list_rows(self, date_from, date_to):
-        return WorkReportRangeResult(tuple(self.rows), 0, 0)
+    def list_rows(self, date_from, date_to, *, include_deleted=False):
+        self.list_calls += 1
+        rows = self.rows + (self.deleted_rows if include_deleted else [])
+        return WorkReportRangeResult(tuple(rows), 0, 0)
 
     def add_manual_row(self, **values):
         self.manual_calls.append(values)
         return self.rows[0]
 
-    def set_included(self, *args, **kwargs):
-        return self.rows[0]
+    def set_included(self, row_id, included, *, resolution_note):
+        self.inclusion_calls.append((row_id, included, resolution_note))
+        index = next(i for i, row in enumerate(self.rows) if row.row_id == row_id)
+        self.rows[index] = replace(
+            self.rows[index],
+            included=included,
+            review_status=(
+                ReviewStatus.NORMAL if included else ReviewStatus.EXCLUDED
+            ),
+        )
+        return self.rows[index]
+
+    def soft_delete_row(self, row_id, *, resolution_note):
+        self.delete_calls.append((row_id, resolution_note))
+        row = next(row for row in self.rows if row.row_id == row_id)
+        self.rows.remove(row)
+        self.deleted_rows.append(
+            replace(row, deleted_at="2026-07-31T00:00:00+00:00")
+        )
+        return self.deleted_rows[-1]
+
+    def restore_row(self, row_id, *, resolution_note):
+        self.restore_calls.append((row_id, resolution_note))
+        row = next(row for row in self.deleted_rows if row.row_id == row_id)
+        self.deleted_rows.remove(row)
+        self.rows.append(replace(row, deleted_at=None))
+        return self.rows[-1]
+
+    def soft_delete_rows(self, row_ids, *, resolution_note):
+        self.bulk_delete_calls.append((list(row_ids), resolution_note))
+        if self.bulk_error is not None:
+            raise self.bulk_error
+        deleted = []
+        for row_id in row_ids:
+            deleted.append(
+                self.soft_delete_row(
+                    row_id, resolution_note=resolution_note
+                )
+            )
+        return deleted
+
+    def restore_rows(self, row_ids, *, resolution_note):
+        self.bulk_restore_calls.append((list(row_ids), resolution_note))
+        if self.bulk_error is not None:
+            raise self.bulk_error
+        restored = []
+        for row_id in row_ids:
+            restored.append(
+                self.restore_row(row_id, resolution_note=resolution_note)
+            )
+        return restored
 
     def refresh_work_order_mappings(self):
         self.mapping_refresh_calls += 1
@@ -307,6 +634,7 @@ def _services():
         extraction_orchestrator=SimpleNamespace(),
         excel_export_service=SimpleNamespace(),
         work_report_service=_WorkReportService(),
+        tracking_dashboard_service=SimpleNamespace(),
         final_report_service=_FinalReportService(),
         report_renderer=SimpleNamespace(),
         clipboard_writer=SimpleNamespace(),
