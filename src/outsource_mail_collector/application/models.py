@@ -88,6 +88,7 @@ class WorkReportRow:
     resolution_note: str | None
     night_headcount: int | None = None
     deleted_at: str | None = None
+    man_day_confirmed: bool = True
 
     @property
     def per_person_display(self) -> str:
@@ -158,6 +159,8 @@ class TrackingDashboardSummary:
     initial_cumulative_man_day: Decimal | None
     source_row_ids: tuple[int, ...]
     blockers: tuple[FinalizationBlocker, ...]
+    work_start_date: date | None = None
+    completed: bool = False
 
     @property
     def can_confirm(self) -> bool:
@@ -262,6 +265,7 @@ def work_report_row_from_stored(stored: StoredWorkReportRow) -> WorkReportRow:
         reported_daily_man_day=stored.reported_daily_man_day,
         calculated_daily_man_day=stored.calculated_daily_man_day,
         confirmed_daily_man_day=stored.confirmed_daily_man_day,
+        man_day_confirmed=stored.man_day_confirmed,
         reported_cumulative_man_day=stored.reported_cumulative_man_day,
         calculated_cumulative_man_day=stored.calculated_cumulative_man_day,
         confirmed_cumulative_man_day=stored.confirmed_cumulative_man_day,

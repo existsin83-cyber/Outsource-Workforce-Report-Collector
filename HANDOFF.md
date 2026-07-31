@@ -56,6 +56,113 @@
 
 ## 세션 기록
 
+## 2026-07-31 18:01:51 KST — 메일 검토·공수 확정 흐름 중간 인계 및 푸시 준비
+
+### 세션 정보
+
+- 작업 주체: Codex
+- 세션 ID: 확인 불가
+- 작업 디렉터리: `D:\My_Work\Outsource Workforce Report Collector\.worktrees\mail-review-confirmation-workflow`
+- Git 브랜치: `feat/mail-review-confirmation-workflow`
+- 기준 커밋: `7b07a77` (`chore: preserve parser and runtime stabilization baseline`)
+
+### 1. 세션 목표
+
+- 사용자가 요청한 메일 검토 후 공수 확정, 일괄 확정, 완료 장비 분리의 현재 구현 상태와 남은 UI 작업을 인계하고, 사용자가 명시적으로 요청한 커밋·푸시를 수행한다.
+
+제외 범위:
+
+- 실제 Outlook 메일, Excel 통합문서, 사용자 SQLite DB를 열거나 변경하지 않는다.
+- 남아 있는 UI 기능을 이번 중간 커밋에서 임의로 완료 처리하지 않는다.
+
+### 2. 시작 시점 상태
+
+- 기존 `master`의 사용자 변경은 `7b07a77`에 보존한 뒤, 별도 worktree/기능 브랜치에서 작업했다.
+- 이 브랜치에는 미커밋 코드·테스트 변경 10개 파일이 있었고, 아직 대시보드/최종 미리보기 UI 구현은 끝나지 않았다.
+
+### 3. 확정 결정
+
+- 새로 수집하거나 수동으로 만든 작업보고 행은 공수 후보값으로 저장하고, 사용자의 확정 후에만 수주 공수 대시보드 누적에 포함한다.
+- 일괄 확정은 선택 행 중 하나라도 확정 불가이면 어떤 행도 확정하지 않는 원자적 동작으로 둔다.
+- 작업 완료는 검증 경고가 있어도 경고·재확인 후 진행 가능하며, 완료된 Tracking No.는 기본 대시보드에서 제외하고 완료 장비 목록에서 다시 열 수 있게 하는 서비스 계약을 사용한다.
+- 화면의 선택 삭제는 현재 표시에서만 숨기고, 다시 메일을 가져오면 재표시한다. 영구적인 업무 제외 상태와 구분한다.
+
+### 4. 수행 내용
+
+- SQLite `work_report_rows`에 `man_day_confirmed`를 additive migration으로 추가했고, `tracking_workflows` 상태 테이블을 추가했다.
+- `WorkReportService.confirm_rows()`에 사전 전수 검증과 트랜잭션 기반 원자적 일괄 확정을 구현했다.
+- `TrackingDashboardService`에 미확정 행 제외, 작업 시작일 기본값(Tracking No.의 최초 작업일), 완료/재개 및 완료 목록 조회를 추가했다.
+- 검토 표에 전체 선택/행 번호/헤더 정렬을 추가하고, 확정 행을 강조·비활성화하도록 변경했다.
+- 메인 화면에는 초기화, 선택 행 일괄 확정, 날짜 범위 재조회, 임시 숨김, 대시보드 이동 연결의 일부를 구현했다.
+
+### 5. 변경 파일
+
+- `src/outsource_mail_collector/application/models.py`
+- `src/outsource_mail_collector/application/tracking_dashboard_service.py`
+- `src/outsource_mail_collector/application/work_report_service.py`
+- `src/outsource_mail_collector/infrastructure/db/repository.py`
+- `src/outsource_mail_collector/infrastructure/db/schema.sql`
+- `src/outsource_mail_collector/ui/main_window.py`
+- `src/outsource_mail_collector/ui/review_grid.py`
+- `tests/test_review_grid.py`
+- `tests/test_tracking_dashboard_service.py`
+- `tests/test_work_report_service.py`
+- `HANDOFF.md`
+
+### 6. 검증 결과
+
+- 이전 기준 전체 테스트: `261 passed in 86.33s` (`7b07a77` 기준).
+- 이번 변경의 focused 테스트: `tests/test_tracking_dashboard_service.py tests/test_work_report_service.py tests/test_review_grid.py` — `57 passed in 37.36s`.
+- `python -m compileall -q src` — 성공.
+- 이번 브랜치 전체 테스트: `.venv\Scripts\python.exe -m pytest -q --basetemp .pytest-basetemp-mail-review-handoff -p no:cacheprovider` — `259 passed, 5 failed in 95.29s`.
+- `git diff --check`은 앞선 변경 시점에 성공했으며, 커밋 직전 다시 실행한다.
+
+### 7. 실패 및 미확정 사항
+
+- 전체 테스트 실패 5건은 아직 동기화하지 않은 기존 UI 테스트/도움말 계약이다.
+  - 최종 표 미리보기 버튼은 이제 수주 공수 대시보드로 이동하지만, 기존 테스트는 `FinalReportDialog` 호출을 기대한다.
+  - 검토 표의 행 번호 추가로 작업 열 인덱스가 바뀌었지만, 기존 테스트는 이전 인덱스 `17`을 사용한다.
+  - 선택 삭제는 영구 soft delete가 아니라 현재 화면 임시 숨김으로 변경했지만, 기존 테스트는 확인 창과 서비스 삭제 호출을 기대한다.
+  - 새 `전체 선택`, `행 번호`, `확정` 헤더에 대한 `COLUMN_HELP` 정의가 아직 없다.
+- `TrackingDashboardDialog`의 작업 시작일 달력, 완료 버튼의 2단계 확인/완료 장비 목록 이동, 제목 말풍선과 표 정렬 UI는 아직 구현하지 않았다.
+- `ProblemReviewDialog`의 메일값 채택/계산값 채택 전용 버튼, 최종 표 미리보기의 경고 요약화·표 정렬은 아직 구현하지 않았다.
+- 메인 화면에 남아 있는 복구 화면 버튼을 최종 UX 결정에 맞게 정리해야 한다.
+
+### 8. 현재 상태
+
+- 데이터 모델·저장소·서비스와 검토 표의 핵심 확정 계약: 부분 완료.
+- 전체 자동 테스트: 실패 상태(위 5건).
+- 실제 Outlook/Excel, 기존 사용자 DB migration, 실제 데스크톱 GUI 수동 검증: 미실행.
+
+### 9. 다음 세션 실행 순서
+
+1. 실패한 5개 UI/도움말 테스트를 새 사용자 계약으로 먼저 갱신하여 RED를 확인하고, 남은 UI 구현과 함께 GREEN으로 만든다.
+2. `TrackingDashboardDialog`, `ProblemReviewDialog`, `FinalReportDialog`의 미완료 요구사항을 구현하고, 각 실제 버튼 클릭 경로를 offscreen Qt 테스트로 검증한다.
+3. 전체 pytest, `compileall`, `git diff --check`를 다시 실행한다.
+4. 사용자 승인 후 복사본 DB와 제한된 날짜 범위에서 migration 및 실제 GUI를 검증한다. Outlook은 읽기 전용으로 유지한다.
+
+완료 판단 기준:
+
+- 전체 테스트가 통과하고, 미리보기·대시보드·완료 장비 목록·확정/일괄 확정의 실제 UI 경로가 테스트로 검증된다.
+- 실환경 검증은 별도로 실행 여부와 결과를 구분해 기록한다.
+
+### 10. 위험 및 주의사항
+
+- `man_day_confirmed`의 DB 기본값은 기존 행 호환을 위해 `1`이며, 새 수집/수동 검토 행은 서비스에서 명시적으로 미확정으로 저장한다. 복사본 DB migration 검증이 필요하다.
+- 완료 상태는 Tracking No. 단위이므로, 완료 처리 시 같은 Tracking No.의 대시보드 집계가 함께 완료 목록으로 이동한다.
+- 실제 메일 본문, 메일 주소, 사용자 DB 데이터를 테스트·문서·로그에 추가하지 않는다.
+
+### 11. Git 및 변경 경계
+
+- 이번 세션 변경: 위 코드·테스트 10개 파일과 `HANDOFF.md`.
+- 기존 사용자 변경: 원래 `master`의 `.claude/`, `.superpowers/`, `AGENTS.md`, `CLAUDE.md`, pytest 임시 폴더는 이 기능 브랜치 커밋에 포함하지 않는다.
+- 커밋: `feat: add man-day confirmation workflow foundation`, 사용자 요청으로 수행.
+- 푸시: 사용자 요청으로 커밋 직후 `origin/feat/mail-review-confirmation-workflow`에 수행 예정.
+
+### 12. 이전 기록 정정
+
+- 없음.
+
 ## 2026-07-31 10:42:28 KST — GitHub 원격 등록 및 master 푸시
 
 ### 세션 정보

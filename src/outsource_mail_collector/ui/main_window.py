@@ -57,6 +57,7 @@ class MainWindow(QMainWindow):
         self._last_missing_names: tuple[str, ...] = ()
         self._last_target_count = 0
         self._last_received_count = 0
+        self._hidden_row_ids: set[int] = set()
 
         self.setWindowTitle("Outsource Mail Collector")
         self.resize(1500, 820)
@@ -98,6 +99,8 @@ class MainWindow(QMainWindow):
         self.folder_combo.addItem(folder or "Inbox")
         self.fetch_button = QPushButton("메일 가져오기")
         self.fetch_button.clicked.connect(self.start_collection)
+        self.clear_button = QPushButton("초기화")
+        self.clear_button.clicked.connect(self._clear_loaded_rows)
         self.settings_button = QPushButton("⚙ 설정")
         self.settings_button.clicked.connect(self._open_settings)
         self.progress_label = QLabel()
@@ -110,6 +113,7 @@ class MainWindow(QMainWindow):
             layout.addWidget(QLabel(label))
             layout.addWidget(widget)
         layout.addWidget(self.fetch_button)
+        layout.addWidget(self.clear_button)
         layout.addWidget(self.progress_label)
         layout.addStretch()
         layout.addWidget(self.settings_button)
@@ -153,15 +157,19 @@ class MainWindow(QMainWindow):
         self.recovery_button = QPushButton("삭제 항목 복구")
         self.recovery_button.clicked.connect(self._open_deleted_rows)
         self.dashboard_button = QPushButton("수주 공수 대시보드")
+        self.dashboard_button.setStyleSheet("background:#1565c0;color:white;font-weight:700;padding:7px 16px;")
         self.dashboard_button.clicked.connect(self._open_tracking_dashboard)
         self.preview_button = QPushButton("최종 표 미리보기")
-        self.preview_button.clicked.connect(self._open_final_preview)
+        self.preview_button.clicked.connect(self._open_tracking_dashboard)
+        self.bulk_confirm_button = QPushButton("선택 행 일괄 확정")
+        self.bulk_confirm_button.clicked.connect(self._bulk_confirm_selected_rows)
         self.excel_button = QPushButton("Excel 반영")
         self.excel_button.clicked.connect(self._show_excel_notice)
         layout.addWidget(self.manual_button)
         layout.addWidget(self.delete_button)
         layout.addWidget(self.recovery_button)
         layout.addWidget(self.dashboard_button)
+        layout.addWidget(self.bulk_confirm_button)
         layout.addStretch()
         layout.addWidget(self.preview_button)
         layout.addWidget(self.excel_button)
@@ -177,6 +185,7 @@ class MainWindow(QMainWindow):
             )
             return
         self.fetch_button.setEnabled(False)
+        self._hidden_row_ids.clear()
         self.progress_label.setText("메일 분석 중…")
         worker = CollectionWorker(
             self._qdate_to_date(self.received_date_edit.date()),
@@ -199,7 +208,11 @@ class MainWindow(QMainWindow):
         self._last_missing_names = tuple(
             employee.name for employee in result.collection.missing_employees
         )
-        self._apply_rows(result.work_report_rows)
+        self._apply_rows(
+            self._services.work_report_service.list_rows(
+                *self._selected_work_range()
+            ).rows
+        )
         errors = result.collection.errors + result.extraction.errors
         if errors:
             QMessageBox.warning(
@@ -235,8 +248,10 @@ class MainWindow(QMainWindow):
         self._apply_rows(result.rows)
 
     def _apply_rows(self, rows: tuple[WorkReportRow, ...]) -> None:
-        self._rows = tuple(rows)
-        self.review_grid.set_rows(list(rows))
+        self._rows = tuple(
+            row for row in rows if row.row_id not in self._hidden_row_ids
+        )
+        self.review_grid.set_rows(list(self._rows))
         warning_count = sum(
             bool(row.issue_codes) and row.included for row in rows
         )
@@ -305,6 +320,25 @@ class MainWindow(QMainWindow):
                     resolution_note=str(values["resolution_note"]),
                 )
                 self._reload_rows()
+            return
+        if (
+            not row.issue_codes
+            and not row.man_day_confirmed
+            and row.confirmed_daily_man_day is not None
+            and row.confirmed_cumulative_man_day is not None
+            and row.reported_daily_man_day == row.calculated_daily_man_day
+            and row.reported_cumulative_man_day == row.calculated_cumulative_man_day
+        ):
+            try:
+                self._services.work_report_service.confirm_row(
+                    row_id,
+                    confirmed_daily_man_day=row.confirmed_daily_man_day,
+                    confirmed_cumulative_man_day=row.confirmed_cumulative_man_day,
+                    resolution_note="메일값과 계산값 일치 확인",
+                )
+            except ValueError as exc:
+                QMessageBox.warning(self, "공수 확정 실패", str(exc))
+            self._reload_rows()
             return
         dialog_arguments: dict[str, object] = {
             "reported_daily": row.reported_daily_man_day,
@@ -388,23 +422,20 @@ class MainWindow(QMainWindow):
                 self, "삭제 행 선택", "삭제할 행을 선택해 주세요."
             )
             return
-        answer = QMessageBox.question(
-            self,
-            "선택 행 삭제",
-            "선택한 행을 애플리케이션에서 삭제하시겠습니까?\n"
-            "Outlook 메일은 삭제하거나 변경하지 않습니다.\n"
-            "삭제한 행은 대시보드와 최종 표에서 빠지며 나중에 복구할 수 있습니다.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
+        self._hidden_row_ids.update(row_ids)
+        self._apply_rows(self._rows)
+
+    def _clear_loaded_rows(self) -> None:
+        self._hidden_row_ids.update(row.row_id for row in self._rows)
+        self._apply_rows(self._rows)
+
+    def _bulk_confirm_selected_rows(self) -> None:
         try:
-            self._services.work_report_service.soft_delete_rows(
-                row_ids, resolution_note="사용자 선택 삭제"
+            self._services.work_report_service.confirm_rows(
+                self.review_grid.checked_row_ids()
             )
         except ValueError as exc:
-            QMessageBox.warning(self, "선택 삭제 실패", str(exc))
+            QMessageBox.warning(self, "일괄 확정 실패", str(exc))
             return
         self._reload_rows()
 

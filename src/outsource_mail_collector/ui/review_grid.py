@@ -28,7 +28,8 @@ from outsource_mail_collector.ui.work_report_guidance import (
 
 
 _COLUMNS = (
-    "",
+    "전체 선택",
+    "행 번호",
     "작업일",
     "거래처명",
     "Tracking No.",
@@ -90,6 +91,8 @@ class ReviewGridWidget(QTableWidget):
             QHeaderView.ResizeMode.ResizeToContents
         )
         self.horizontalHeader().setStretchLastSection(True)
+        self.horizontalHeader().sectionClicked.connect(self._toggle_all_rows)
+        self.setSortingEnabled(True)
         self.verticalHeader().setVisible(False)
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -97,9 +100,25 @@ class ReviewGridWidget(QTableWidget):
             self.set_rows(rows)
 
     def set_rows(self, rows: list[WorkReportRow]) -> None:
+        self.setSortingEnabled(False)
         self.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
             self._populate_row(row_index, row)
+        self.setSortingEnabled(True)
+
+    def _toggle_all_rows(self, column: int) -> None:
+        if column != 0 or not self.rowCount():
+            return
+        all_checked = all(
+            self.item(row_index, 0) is not None
+            and self.item(row_index, 0).checkState() is Qt.CheckState.Checked
+            for row_index in range(self.rowCount())
+        )
+        state = Qt.CheckState.Unchecked if all_checked else Qt.CheckState.Checked
+        for row_index in range(self.rowCount()):
+            item = self.item(row_index, 0)
+            if item is not None:
+                item.setCheckState(state)
 
     def checked_row_ids(self) -> list[int]:
         result: list[int] = []
@@ -118,6 +137,9 @@ class ReviewGridWidget(QTableWidget):
         selector.setData(Qt.ItemDataRole.UserRole, row.row_id)
         selector.setToolTip("행 선택: 현재 표시값은 선택되지 않음입니다.")
         self.setItem(row_index, 0, selector)
+        number = QTableWidgetItem(str(row.row_id))
+        number.setFlags(number.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self.setItem(row_index, 1, number)
 
         issue_text = (
             ", ".join(issue_title(issue) for issue in row.issue_codes)
@@ -142,7 +164,7 @@ class ReviewGridWidget(QTableWidget):
             issue_text,
         )
         problem = bool(row.issue_codes) and not row.warning_confirmed
-        for column, value in enumerate(values, start=1):
+        for column, value in enumerate(values, start=2):
             item = QTableWidgetItem(value)
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             if problem:
@@ -196,7 +218,10 @@ class ReviewGridWidget(QTableWidget):
             )
             layout.addWidget(original)
         review = QToolButton()
-        review.setText("확인")
+        review.setText("확정됨" if row.man_day_confirmed else "확정")
+        review.setEnabled(not row.man_day_confirmed)
+        if row.man_day_confirmed:
+            review.setStyleSheet("background:#1565c0;color:white;font-weight:700;")
         review.setToolTip(
             "확인: 행을 검토하고 확정값을 입력합니다. "
             "수주 미등록 같은 구조적 문제는 먼저 설정에서 수정해야 합니다."

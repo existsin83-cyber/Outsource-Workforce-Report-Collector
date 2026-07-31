@@ -82,6 +82,16 @@ class CumulativeBaseline:
 
 
 @dataclass(frozen=True)
+class TrackingWorkflow:
+    normalized_tracking_no: str
+    tracking_no: str
+    work_start_date: date
+    completed_at: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
 class StoredReviewRecord:
     record_id: int
     mail_entry_id: str
@@ -143,6 +153,7 @@ class StoredWorkReportRow:
     reported_daily_man_day: Decimal | None
     calculated_daily_man_day: Decimal | None
     confirmed_daily_man_day: Decimal | None
+    man_day_confirmed: bool
     reported_cumulative_man_day: Decimal | None
     calculated_cumulative_man_day: Decimal | None
     confirmed_cumulative_man_day: Decimal | None
@@ -235,6 +246,7 @@ _MIGRATION_COLUMNS: dict[str, dict[str, str]] = {
     "work_report_rows": {
         "night_headcount": "INTEGER",
         "deleted_at": "TEXT",
+        "man_day_confirmed": "INTEGER NOT NULL DEFAULT 1",
     },
     "final_report_rows": {
         "night_headcount": "INTEGER",
@@ -279,6 +291,7 @@ _WORK_REPORT_UPDATE_FIELDS = {
     "reported_daily_man_day",
     "calculated_daily_man_day",
     "confirmed_daily_man_day",
+    "man_day_confirmed",
     "reported_cumulative_man_day",
     "calculated_cumulative_man_day",
     "confirmed_cumulative_man_day",
@@ -886,6 +899,65 @@ class SQLiteRepository:
             ).fetchall()
         return [_cumulative_baseline_from_row(row) for row in rows]
 
+    def save_tracking_workflow(
+        self,
+        *,
+        tracking_no: str,
+        work_start_date: date,
+        completed: bool,
+    ) -> TrackingWorkflow:
+        normalized = normalize_tracking_no(tracking_no)
+        if not normalized:
+            raise ValueError("Tracking No. is required.")
+        now = _utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO tracking_workflows(
+                    normalized_tracking_no, tracking_no, work_start_date,
+                    completed_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(normalized_tracking_no) DO UPDATE SET
+                    tracking_no = excluded.tracking_no,
+                    work_start_date = excluded.work_start_date,
+                    completed_at = excluded.completed_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    normalized,
+                    tracking_no.strip(),
+                    work_start_date.isoformat(),
+                    now if completed else None,
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM tracking_workflows WHERE normalized_tracking_no = ?",
+                (normalized,),
+            ).fetchone()
+            assert row is not None
+            workflow = _tracking_workflow_from_row(row)
+            _insert_action_log(
+                conn,
+                "TRACKING_WORKFLOW_SAVED",
+                normalized,
+                None,
+                json.dumps(_json_safe(workflow), ensure_ascii=False),
+            )
+        return workflow
+
+    def get_tracking_workflow(self, tracking_no: str) -> TrackingWorkflow | None:
+        normalized = normalize_tracking_no(tracking_no)
+        if not normalized:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM tracking_workflows WHERE normalized_tracking_no = ?",
+                (normalized,),
+            ).fetchone()
+        return None if row is None else _tracking_workflow_from_row(row)
+
     def delete_work_order_mapping(self, mapping_id: int) -> None:
         with self._connect() as conn:
             existing = conn.execute(
@@ -1195,14 +1267,15 @@ class SQLiteRepository:
                 equipment_name, business_team, actual_headcount,
                 night_headcount, per_person_man_day, reported_daily_man_day,
                 calculated_daily_man_day, confirmed_daily_man_day,
-                reported_cumulative_man_day, calculated_cumulative_man_day,
+                man_day_confirmed, reported_cumulative_man_day,
+                calculated_cumulative_man_day,
                 confirmed_cumulative_man_day, cumulative_series_key,
                 issue_codes_json, review_status, included, warning_confirmed,
                 resolution_note, created_at, updated_at
             )
             VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?
             )
             """,
             (
@@ -1221,6 +1294,7 @@ class SQLiteRepository:
                 _decimal_to_db(values.get("reported_daily_man_day")),
                 _decimal_to_db(values.get("calculated_daily_man_day")),
                 _decimal_to_db(values.get("confirmed_daily_man_day")),
+                int(bool(values.get("man_day_confirmed", True))),
                 _decimal_to_db(values.get("reported_cumulative_man_day")),
                 _decimal_to_db(values.get("calculated_cumulative_man_day")),
                 _decimal_to_db(values.get("confirmed_cumulative_man_day")),
@@ -1417,6 +1491,7 @@ class SQLiteRepository:
                 UPDATE work_report_rows
                 SET confirmed_daily_man_day = ?,
                     confirmed_cumulative_man_day = ?,
+                    man_day_confirmed = 1,
                     warning_confirmed = 1,
                     work_date_confirmed = 1,
                     review_status = ?,
@@ -1708,6 +1783,17 @@ def _cumulative_baseline_from_row(row: sqlite3.Row) -> CumulativeBaseline:
     )
 
 
+def _tracking_workflow_from_row(row: sqlite3.Row) -> TrackingWorkflow:
+    return TrackingWorkflow(
+        normalized_tracking_no=str(row["normalized_tracking_no"]),
+        tracking_no=str(row["tracking_no"]),
+        work_start_date=date.fromisoformat(str(row["work_start_date"])),
+        completed_at=row["completed_at"],
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
 def normalize_tracking_no(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value)
     return "".join(normalized.split()).upper()
@@ -1775,6 +1861,7 @@ def _work_report_from_row(row: sqlite3.Row) -> StoredWorkReportRow:
         confirmed_daily_man_day=_decimal_from_db(
             row["confirmed_daily_man_day"]
         ),
+        man_day_confirmed=bool(row["man_day_confirmed"]),
         reported_cumulative_man_day=_decimal_from_db(
             row["reported_cumulative_man_day"]
         ),

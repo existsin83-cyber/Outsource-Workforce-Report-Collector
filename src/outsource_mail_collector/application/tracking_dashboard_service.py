@@ -79,6 +79,54 @@ class TrackingDashboardService:
         )
 
     def summaries(self) -> tuple[TrackingDashboardSummary, ...]:
+        """Return active Tracking No. groups that are not completed."""
+
+        return tuple(item for item in self._all_summaries() if not item.completed)
+
+    def completed_summaries(self) -> tuple[TrackingDashboardSummary, ...]:
+        """Return Tracking No. groups moved to the completed equipment list."""
+
+        return tuple(item for item in self._all_summaries() if item.completed)
+
+    def complete_tracking(self, tracking_no: str) -> TrackingDashboardSummary:
+        summary = self._summary_by_tracking(tracking_no)
+        known_dates = [
+            row.work_date
+            for row in self.drill_down(summary.normalized_tracking_no)
+            if row.work_date is not None
+        ]
+        if not known_dates:
+            raise ValueError("Work start date cannot be determined.")
+        self._repository.save_tracking_workflow(
+            tracking_no=summary.tracking_no,
+            work_start_date=summary.work_start_date or min(known_dates),
+            completed=True,
+        )
+        return self._summary_by_tracking(tracking_no)
+
+    def reopen_tracking(self, tracking_no: str) -> TrackingDashboardSummary:
+        summary = self._summary_by_tracking(tracking_no)
+        if summary.work_start_date is None:
+            raise ValueError("Work start date cannot be determined.")
+        self._repository.save_tracking_workflow(
+            tracking_no=summary.tracking_no,
+            work_start_date=summary.work_start_date,
+            completed=False,
+        )
+        return self._summary_by_tracking(tracking_no)
+
+    def set_work_start_date(
+        self, tracking_no: str, work_start_date: date
+    ) -> TrackingDashboardSummary:
+        summary = self._summary_by_tracking(tracking_no)
+        self._repository.save_tracking_workflow(
+            tracking_no=summary.tracking_no,
+            work_start_date=work_start_date,
+            completed=summary.completed,
+        )
+        return self._summary_by_tracking(tracking_no)
+
+    def _all_summaries(self) -> tuple[TrackingDashboardSummary, ...]:
         grouped: dict[str, list[TrackingDailyAggregate]] = defaultdict(list)
         for aggregate in self._all_daily_aggregates():
             if aggregate.normalized_tracking_no:
@@ -92,6 +140,14 @@ class TrackingDashboardService:
                 summaries,
                 key=lambda item: item.normalized_tracking_no,
             )
+        )
+
+    def _summary_by_tracking(self, tracking_no: str) -> TrackingDashboardSummary:
+        normalized = normalize_tracking_no(tracking_no)
+        return next(
+            summary
+            for summary in self._all_summaries()
+            if summary.normalized_tracking_no == normalized
         )
 
     def drill_down(self, tracking_no: str) -> tuple[WorkReportRow, ...]:
@@ -165,7 +221,9 @@ class TrackingDashboardService:
         return [
             row
             for row in self._repository.list_all_work_report_rows()
-            if row.included and row.deleted_at is None
+            if row.included
+            and row.deleted_at is None
+            and row.man_day_confirmed
         ]
 
     @staticmethod
@@ -218,6 +276,12 @@ class TrackingDashboardService:
             aggregates[-1],
         )
         baseline = self._repository.get_cumulative_baseline(normalized)
+        workflow = self._repository.get_tracking_workflow(normalized)
+        known_dates = [
+            aggregate.work_date
+            for aggregate in aggregates
+            if aggregate.work_date is not None
+        ]
         blockers = _deduplicate_blockers(
             blocker
             for aggregate in aggregates
@@ -252,6 +316,10 @@ class TrackingDashboardService:
                 for source_id in aggregate.source_row_ids
             ),
             blockers=blockers,
+            work_start_date=(
+                workflow.work_start_date if workflow is not None else min(known_dates, default=None)
+            ),
+            completed=bool(workflow and workflow.completed_at),
         )
 
 

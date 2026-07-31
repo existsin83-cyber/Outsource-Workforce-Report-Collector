@@ -43,6 +43,15 @@ CREATE TABLE IF NOT EXISTS cumulative_baselines (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS tracking_workflows (
+    normalized_tracking_no TEXT PRIMARY KEY,
+    tracking_no TEXT NOT NULL,
+    work_start_date TEXT NOT NULL,
+    completed_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS processed_mails (
     mail_entry_id TEXT PRIMARY KEY,
     subject TEXT,
@@ -118,6 +127,7 @@ CREATE TABLE IF NOT EXISTS work_report_rows (
     reported_daily_man_day TEXT,
     calculated_daily_man_day TEXT,
     confirmed_daily_man_day TEXT,
+    man_day_confirmed INTEGER NOT NULL DEFAULT 1,
     reported_cumulative_man_day TEXT,
     calculated_cumulative_man_day TEXT,
     confirmed_cumulative_man_day TEXT,

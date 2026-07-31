@@ -83,6 +83,42 @@ def test_dashboard_calculates_baseline_plus_confirmed_daily(tmp_path):
     assert daily[0].blockers == ()
 
 
+def test_completed_tracking_moves_from_dashboard_to_completed_list(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    _create_row(repository, work_date=date(2026, 7, 29))
+    service = _dashboard_service(repository)
+
+    completed = service.complete_tracking("AB260101")
+
+    assert completed.work_start_date == date(2026, 7, 29)
+    assert service.summaries() == ()
+    assert [item.tracking_no for item in service.completed_summaries()] == [
+        "AB260101"
+    ]
+
+
+def test_unconfirmed_man_day_candidate_does_not_contribute_to_dashboard(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    repository.save_cumulative_baseline(
+        tracking_no="AB260101",
+        effective_through_date=date(2026, 7, 28),
+        cumulative_man_day=Decimal("20.0"),
+        resolution_note="test baseline",
+    )
+    row = _create_row(
+        repository,
+        confirmed_daily=Decimal("3.0"),
+        confirmed_cumulative=Decimal("23.0"),
+        man_day_confirmed=False,
+    )
+
+    stored = repository.get_work_report_row(row.row_id)
+    summaries = _dashboard_service(repository).summaries()
+
+    assert getattr(stored, "man_day_confirmed", True) is False
+    assert summaries == ()
+
+
 def test_reported_cumulative_mismatch_blocks_against_calculated_value(tmp_path):
     repository = SQLiteRepository(tmp_path / "collector.db")
     repository.save_cumulative_baseline(
@@ -412,6 +448,7 @@ def _create_row(
     confirmed_cumulative: Decimal | None = Decimal("12.0"),
     issue_codes: tuple[WorkReportIssueCode, ...] = (),
     included: bool = True,
+    man_day_confirmed: bool = True,
 ):
     return repository.create_manual_report_row(
         work_date=work_date,
@@ -433,6 +470,7 @@ def _create_row(
         issue_codes=issue_codes,
         review_status=ReviewStatus.REVIEWED,
         included=included,
+        man_day_confirmed=man_day_confirmed,
         warning_confirmed=True,
         resolution_note="테스트 준비",
     )

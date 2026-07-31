@@ -41,6 +41,31 @@ def test_synchronize_preserves_reported_values_and_is_idempotent(tmp_path):
     assert row.reported_daily_man_day == Decimal("3.0")
     assert row.reported_cumulative_man_day == Decimal("12.0")
     assert row.cumulative_series_key == "AB260101"
+    assert row.man_day_confirmed is False
+
+
+def test_bulk_confirmation_is_atomic_when_any_selected_row_is_not_confirmable(
+    tmp_path,
+):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    service = _work_report_service(repository)
+    service.save_cumulative_baseline(
+        tracking_no="AB260101",
+        effective_through_date=date(2026, 7, 29),
+        cumulative_man_day=Decimal("10.0"),
+        resolution_note="initial baseline",
+    )
+    confirmable = _add_manual_daily(
+        service, date(2026, 7, 30), Decimal("3.0")
+    )
+    blocked = service.synchronize_extracted_records(
+        [replace(_review_record(), actual_headcount=None)]
+    )[0]
+
+    with pytest.raises(ValueError, match="일괄 확정"):
+        service.confirm_rows([confirmable.row_id, blocked.row_id])
+
+    assert repository.get_work_report_row(confirmable.row_id).man_day_confirmed is False
 
 
 def test_synchronize_enriches_vendor_and_team_from_work_order(tmp_path):

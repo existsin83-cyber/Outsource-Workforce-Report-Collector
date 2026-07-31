@@ -493,6 +493,68 @@ class WorkReportService:
             self._repository.get_work_report_row(row_id)
         )
 
+    def confirm_rows(self, row_ids: Iterable[int]) -> list[WorkReportRow]:
+        """Confirm matching candidates as one all-or-nothing user action."""
+
+        unique_ids = tuple(dict.fromkeys(int(row_id) for row_id in row_ids))
+        if not unique_ids:
+            raise ValueError("일괄 확정할 행을 선택해 주세요.")
+        rows = [self._repository.get_work_report_row(row_id) for row_id in unique_ids]
+        reasons = [
+            reason
+            for row in rows
+            for reason in self._bulk_confirmation_reasons(row)
+        ]
+        if reasons:
+            raise ValueError(
+                "일괄 확정할 수 없습니다.\n" + "\n".join(reasons)
+            )
+        with self._repository.transaction():
+            for row in rows:
+                self._repository.confirm_work_report_row(
+                    row.row_id,
+                    confirmed_daily_man_day=row.confirmed_daily_man_day,
+                    confirmed_cumulative_man_day=row.confirmed_cumulative_man_day,
+                    resolution_note="선택 행 일괄 확정",
+                )
+            for tracking_no in {row.tracking_no for row in rows if row.tracking_no}:
+                self._recalculate_tracking_series(tracking_no)
+        return [
+            work_report_row_from_stored(
+                self._repository.get_work_report_row(row_id)
+            )
+            for row_id in unique_ids
+        ]
+
+    def _bulk_confirmation_reasons(self, row: StoredWorkReportRow) -> list[str]:
+        blockers = set(row.issue_codes) & _STRUCTURAL_BLOCKERS
+        if blockers:
+            return [f"행 {row.row_id}: 먼저 검증 문제를 해결해 주세요."]
+        baseline = self._repository.get_cumulative_baseline(row.tracking_no or "")
+        if (
+            baseline is None
+            or row.work_date is None
+            or row.work_date <= baseline.effective_through_date
+        ):
+            return [f"행 {row.row_id}: 누적 기준을 먼저 등록해 주세요."]
+        if (
+            row.confirmed_daily_man_day is None
+            or row.confirmed_cumulative_man_day is None
+        ):
+            return [f"행 {row.row_id}: 확정할 공수 후보값이 없습니다."]
+        if (
+            row.reported_daily_man_day is not None
+            and row.calculated_daily_man_day != row.reported_daily_man_day
+        ):
+            return [f"행 {row.row_id}: 메일값과 계산값 중 하나를 선택해 주세요."]
+        if (
+            row.reported_cumulative_man_day is not None
+            and row.calculated_cumulative_man_day
+            != row.reported_cumulative_man_day
+        ):
+            return [f"행 {row.row_id}: 메일 누적값과 계산 누적값 중 하나를 선택해 주세요."]
+        return []
+
     def set_included(
         self, row_id: int, included: bool, *, resolution_note: str
     ) -> WorkReportRow:
@@ -793,6 +855,7 @@ class WorkReportService:
             "reported_daily_man_day": reported_daily,
             "calculated_daily_man_day": daily_calculated,
             "confirmed_daily_man_day": confirmed_daily,
+            "man_day_confirmed": False,
             "reported_cumulative_man_day": reported_cumulative,
             "calculated_cumulative_man_day": cumulative_calculated,
             "confirmed_cumulative_man_day": confirmed_cumulative,
