@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from enum import Enum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from outsource_mail_collector.domain.work_report import WorkDateSource
 
@@ -67,7 +67,7 @@ class EquipmentSection(BaseModel):
     unit_no: str | None = None
     business_team: str | None = None
     section_text: str
-    split_confidence: float = 0.0
+    split_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class OutsourceWorkRecord(BaseModel):
@@ -83,7 +83,7 @@ class OutsourceWorkRecord(BaseModel):
     daily_man_day: float | None = None
     cumulative_man_day: float | None = None
     note: str | None = None
-    confidence: float = 0.0
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     review_status: ReviewStatus = ReviewStatus.FORMAT_UNSUPPORTED
 
 

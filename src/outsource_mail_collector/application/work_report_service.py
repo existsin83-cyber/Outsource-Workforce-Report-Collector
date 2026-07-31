@@ -997,7 +997,7 @@ class WorkReportService:
             self._repository.update_work_report_row(
                 row.row_id,
                 changes,
-                resolution_note="누적 원장 자동 재계산",
+                resolution_note=row.resolution_note,
             )
 
 

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QLabel,
     QLineEdit,
     QWidget,
 )
@@ -45,6 +46,10 @@ class ManualRowDialog(QDialog):
             ("추가 사유", self.note_edit),
         ):
             layout.addRow(label, widget)
+        self.error_label = QLabel()
+        self.error_label.setWordWrap(True)
+        self.error_label.setStyleSheet("color:#c62828;")
+        layout.addRow(self.error_label)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
@@ -94,8 +99,10 @@ class ManualRowDialog(QDialog):
     def _accept_if_valid(self) -> None:
         try:
             self.values()
-        except ValueError:
+        except ValueError as exc:
+            self.error_label.setText(str(exc))
             return
+        self.error_label.clear()
         self.accept()
 
 

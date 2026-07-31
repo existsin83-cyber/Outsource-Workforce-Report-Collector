@@ -694,6 +694,27 @@ def test_update_confirmed_daily_persists_requested_value_and_recalculates_later(
     )
 
 
+def test_automatic_cumulative_recalculation_preserves_user_resolution_note(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    service = _work_report_service(repository)
+    service.save_cumulative_baseline(
+        tracking_no="AB260101",
+        effective_through_date=date(2026, 7, 29),
+        cumulative_man_day=Decimal("10.0"),
+        resolution_note="기준 누적 확인",
+    )
+
+    created = _add_manual_daily(service, date(2026, 7, 30), Decimal("3.0"))
+    service.save_cumulative_baseline(
+        tracking_no="AB260101",
+        effective_through_date=date(2026, 7, 29),
+        cumulative_man_day=Decimal("11.0"),
+        resolution_note="기준 누적 정정",
+    )
+
+    assert repository.get_work_report_row(created.row_id).resolution_note == "수동 작업 확인"
+
+
 def test_work_date_and_tracking_changes_recalculate_old_and_new_series(
     tmp_path,
 ):

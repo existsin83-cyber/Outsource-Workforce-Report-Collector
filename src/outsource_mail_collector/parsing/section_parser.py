@@ -18,6 +18,14 @@ import re
 from outsource_mail_collector.domain.models import EquipmentSection
 
 _NUMBERED_HEADER = re.compile(r"^\d{1,2}[.)]\s*(.+)$")
+# A report date such as ``7.24 금요일 ...`` has the same punctuation as a
+# numbered header, but it must stay in the mail preamble.  Keep the check
+# deliberately narrow so ordinary equipment names beginning with a number
+# (for example ``1. 2호기``) remain valid headers.
+_NUMBERED_DATE_LINE = re.compile(
+    r"^\d{1,2}[.)]\s*\d{1,2}"
+    r"(?:\s*\(?\s*[월화수목금토일](?:요일)?\s*\)?|\s*(?:일일|업무보고|보고서))"
+)
 _DOT_BULLET = re.compile(r"^\.\s*(.+)$")
 _UNIT_MARKER = re.compile(r"#\s*\d+|\d+\s*호기|\d+\s*대")
 
@@ -33,6 +41,12 @@ def _is_field_label_line(remainder: str) -> bool:
     return any(remainder.startswith(prefix) for prefix in _FIELD_LABEL_PREFIXES)
 
 
+def _numbered_header_match(line: str) -> re.Match[str] | None:
+    if _NUMBERED_DATE_LINE.match(line):
+        return None
+    return _NUMBERED_HEADER.match(line)
+
+
 # ponytail: 서술형 진행상황 문장이 점(.) 불릿으로 쓰이는 저자(카테고리+점형, 예:
 # "-CO2-" 다음 ".LOI 발행" 같은 자유 서술)는 FIELD_LABEL 목록에 없는 문장이 새 헤더로
 # 오인되어 과다분할될 수 있다. docs/SYSTEM_ARCHITECTURE.md 가 이미 저자별 파서 플러그인
@@ -46,7 +60,7 @@ def split_sections(mail_id: str, lines: list[str]) -> list[EquipmentSection]:
     # 점(.) 상세 줄(호기 진행상황 등)은 새 섹션이 아니다. 단, "1. PCB" 처럼 카테고리
     # 라벨로 번호를 하나만 쓰는 메일도 있어(윤현준 스타일) 번호가 2개 이상 이어질 때만
     # "번호형 목록"으로 판단한다 - 1개뿐이면 카테고리 라벨로 보고 점(.) 헤더 판별로 넘어간다.
-    numbered_count = sum(1 for line in lines if _NUMBERED_HEADER.match(line))
+    numbered_count = sum(1 for line in lines if _numbered_header_match(line))
     uses_numbered_headers = numbered_count >= 2
 
     sections: list[EquipmentSection] = []
@@ -69,7 +83,7 @@ def split_sections(mail_id: str, lines: list[str]) -> list[EquipmentSection]:
     for line in lines:
         header_text: str | None = None
 
-        numbered_match = _NUMBERED_HEADER.match(line)
+        numbered_match = _numbered_header_match(line)
         if numbered_match:
             header_text = numbered_match.group(1)
         elif not uses_numbered_headers:

@@ -178,6 +178,18 @@ ON work_report_rows(extracted_record_id);
 CREATE INDEX IF NOT EXISTS idx_work_report_duplicate
 ON work_report_rows(work_date, vendor_name, tracking_no, equipment_name);
 
+CREATE INDEX IF NOT EXISTS idx_extracted_records_mail_entry
+ON extracted_records(mail_entry_id);
+
+CREATE INDEX IF NOT EXISTS idx_extracted_records_report_date
+ON extracted_records(report_date);
+
+CREATE INDEX IF NOT EXISTS idx_work_report_tracking_date
+ON work_report_rows(tracking_no, work_date);
+
+CREATE INDEX IF NOT EXISTS idx_final_reports_invalidated
+ON final_reports(invalidated_at);
+
 CREATE INDEX IF NOT EXISTS idx_final_report_rows_report
 ON final_report_rows(report_id, snapshot_row_id);
 

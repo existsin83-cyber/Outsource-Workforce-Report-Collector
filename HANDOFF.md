@@ -2062,3 +2062,49 @@
 - 커밋·푸시하지 않음.
 - 기존 미추적 `.claude/`, `.superpowers/`, `AGENTS.md`, `CLAUDE.md`는 보존.
 - 초기 기준선 확인 중 시스템 Python 의존성 누락과 pytest 임시 폴더 ACL 오류가 있었으며, `.venv`와 권한 허용 전용 `--basetemp` 경로로 최종 검증을 완료.
+## 2026-07-31 — P0 integrity and runtime safety follow-up
+
+### Changes
+
+- Parser: cumulative man-day accepts no unit, `MD`, or `공수`; total input man-day remains an ambiguous note and never becomes daily man-day, including when a later valid daily value exists.
+- Domain exports: restored a top-level package docstring and merged the core/work-report `__all__` exports.
+- Settings: vendor row signal ordering is safe; incomplete work-order mappings fail before the save transaction, preventing partial commits and stale main-grid state.
+- Validation: all issue strings are retained and the primary `ReviewStatus` follows the explicit equipment → tracking → headcount → ambiguous-number → cumulative-only → daily-missing → vendor priority.
+- Runtime: Outlook COM errors are handled at collection/open boundaries, manual-row validation displays errors, and ordinary reload clears collection-only counters.
+- SQLite: every repository connection uses timeout, busy timeout, WAL, and foreign keys; automatic cumulative recalculation preserves an existing user resolution note.
+
+### Verification
+
+- Focused regression suites run by task: parser/domain 13 passed; settings 21 passed; runtime UI/service 26 passed; repository/work-report 57 passed; validation/extraction 19 passed.
+- Integrated changed-area suite: 127 passed in 50.21s.
+- `git diff --check` passed (only LF-to-CRLF informational warnings).
+- Whole suite was started with a 60-second command limit but did not complete, so no whole-suite pass claim is made.
+- No real Outlook, Excel, or manual GUI verification was run.
+
+### Review and next work
+
+- Scoped subagent reviews were completed for parser, settings/runtime, validation, and SQLite changes; review findings led to added mixed-label parser, full validation-priority, and deterministic SQLite-lock regressions.
+- Deferred audit work: combined vendor/inline extraction, zero-headcount semantics confirmation, section date-header parsing, confidence-scale redesign, split-confidence disposition, query/index performance work, COM apartment redesign, and documentation/cleanup require separate scoped tasks.
+- No commit, push, or branch change was made. Existing untracked user files remain untouched.
+
+## 2026-07-31 2차 파싱·신뢰도·SQLite 안정화
+
+### 변경
+
+- 섹션 파서가 `7.24 금요일 업무보고` 같은 날짜 줄을 번호 헤더로 오인하지 않도록 제한했고, 추출기가 현재 본문에 수주번호가 없을 때 기존 `tracking_no`를 보존해 반복 호출에도 입력을 변이하지 않도록 했다.
+- FORMAT_B의 주간·야간 값은 의미가 인라인의 야근 인원과 다를 수 있어 `actual_headcount`로 합산하지 않고 별도 값으로 보존한다. `confidence`/`split_confidence`는 0.0~1.0 범위를 모델에서 검증하며, 점수 체계 자체의 재설계는 제품 결정 전 보류한다.
+- SQLite additive migration 및 기본 스키마에 메일 식별자·보고일·삭제일·수주번호·무효화일 조회용 인덱스를 추가했다. 기존 DB의 `deleted_at` 컬럼 생성 순서를 고려해 해당 인덱스는 migration에서 생성한다.
+
+### 검증
+
+- 2차 변경 집중 테스트: 84 passed, 날짜/FORMAT_B 보정 후 추가 회귀 포함.
+- 최종 전체 테스트: 261 passed in 85.89s.
+- `git diff --check` 통과(LF/CRLF 안내만).
+- 실제 Outlook/Excel COM, GUI 수동 조작, 전체 pytest 완료는 수행하지 않았다.
+
+### 보류 및 결정 게이트
+
+- `외주 인원 : 0명`의 행 생성 여부, 벤더 헤더와 인라인 형식의 혼합 우선순위, 다중 수주번호·업체명 정규식 축약 규칙은 업무 의미 확인 후 별도 회귀 테스트와 함께 결정한다.
+- FORMAT_B의 주간/야간을 공수 계산에 연결하는 변환 정책과 confidence evidence 조합별 점수표는 업무 규칙 합의 전까지 확정하지 않는다.
+- `split_confidence`를 저장·검토 상태에 연결할지, Outlook COM 아파트먼트 경계와 GUI 전체 스캔을 어떻게 비동기화할지는 별도 설계 작업이다.
+- 커밋·푸시·브랜치 변경은 하지 않았다.

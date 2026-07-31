@@ -52,6 +52,14 @@ _BUSINESS_TEAMS = (
 _PENDING_VENDOR = "pending_vendor"
 
 
+class IncompleteWorkOrderError(ValueError):
+    """Raised when any populated work-order row is incomplete."""
+
+    def __init__(self, rows: list[int]) -> None:
+        self.rows = rows
+        super().__init__("Incomplete work-order rows cannot be saved.")
+
+
 class SettingsDialog(QDialog):
     def __init__(
         self,
@@ -262,19 +270,23 @@ class SettingsDialog(QDialog):
 
     def add_vendor_row(self, vendor: Vendor | None = None) -> int:
         row = self.vendor_table.rowCount()
-        self.vendor_table.insertRow(row)
-        values = (
-            vendor.canonical_name if vendor else "",
-            ", ".join(vendor.aliases) if vendor else "",
-        )
-        for column, value in enumerate(values):
-            item = QTableWidgetItem(value)
-            if column == 0 and vendor is not None:
-                item.setData(Qt.ItemDataRole.UserRole, vendor.vendor_id)
-            self.vendor_table.setItem(row, column, item)
-        active_checkbox = _check_box(vendor.active if vendor else True)
-        active_checkbox.toggled.connect(self._refresh_work_order_vendor_combos)
-        self.vendor_table.setCellWidget(row, 2, active_checkbox)
+        was_blocked = self.vendor_table.blockSignals(True)
+        try:
+            self.vendor_table.insertRow(row)
+            values = (
+                vendor.canonical_name if vendor else "",
+                ", ".join(vendor.aliases) if vendor else "",
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column == 0 and vendor is not None:
+                    item.setData(Qt.ItemDataRole.UserRole, vendor.vendor_id)
+                self.vendor_table.setItem(row, column, item)
+            active_checkbox = _check_box(vendor.active if vendor else True)
+            active_checkbox.toggled.connect(self._refresh_work_order_vendor_combos)
+            self.vendor_table.setCellWidget(row, 2, active_checkbox)
+        finally:
+            self.vendor_table.blockSignals(was_blocked)
         self._refresh_work_order_vendor_combos()
         return row
 
@@ -400,11 +412,8 @@ class SettingsDialog(QDialog):
 
     def save(self) -> list[int]:
         complete_rows, incomplete_rows = self._validate_all_rows()
-        if incomplete_rows and self._deleted_work_order_ids:
-            raise ValueError(
-                "수주 삭제와 미완성 수주 행을 동시에 저장할 수 없습니다. "
-                "수주번호, 장비명, 업체, 사업팀을 모두 입력하세요."
-            )
+        if incomplete_rows:
+            raise IncompleteWorkOrderError(incomplete_rows)
         folder_path = self.folder_combo.currentText().strip() or "Inbox"
         sheet_name = self.sheet_name_edit.text().strip() or "외주인원_원본"
         saved_ids: list[tuple[QTableWidgetItem, int]] = []
@@ -626,6 +635,16 @@ class SettingsDialog(QDialog):
     def _save_and_accept(self) -> None:
         try:
             incomplete_rows = self.save()
+        except IncompleteWorkOrderError as exc:
+            reasons = "\n".join(
+                self._incomplete_work_order_message(row) for row in exc.rows
+            )
+            QMessageBox.warning(
+                self,
+                "수주 마스터 미완성",
+                f"다음 수주 행을 완성한 뒤 다시 저장하세요.\n{reasons}",
+            )
+            return
         except (DuplicateEntityError, ValueError) as exc:
             QMessageBox.warning(self, "설정 저장 실패", str(exc))
             return
@@ -689,7 +708,7 @@ def _configure_settings_table(table: QTableWidget, widths: list[int]) -> None:
 def _is_checked(table: QTableWidget, row: int, column: int) -> bool:
     checkbox = table.cellWidget(row, column)
     if not isinstance(checkbox, QCheckBox):
-        raise ValueError("활성 상태 체크박스가 필요합니다.")
+        return False
     return checkbox.isChecked()
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 
 import pytest
+import pywintypes
 
 from outsource_mail_collector.application.mail_collection_service import (
     MailCollectionService,
@@ -74,14 +75,38 @@ def test_collect_continues_after_one_message_fails(repository):
     assert result.errors[0].code == "MAIL_OPEN_FAILED"
 
 
+def test_collect_continues_after_one_message_raises_com_error(repository):
+    outlook = FakeOutlookAdapter(
+        envelopes=[
+            _envelope("ENTRY-HONG", "hong@example.com"),
+            _envelope("ENTRY-KIM", "kim@example.com"),
+        ],
+        failing_exceptions={
+            "ENTRY-HONG": pywintypes.com_error(
+                -1, "Outlook item is unavailable", None, None
+            )
+        },
+    )
+
+    result = MailCollectionService(repository, outlook).collect(
+        date(2026, 7, 24), "Inbox"
+    )
+
+    assert [mail.mail_id for mail in result.mails] == ["ENTRY-KIM"]
+    assert result.errors[0].mail_id == "ENTRY-HONG"
+    assert result.errors[0].code == "MAIL_OPEN_FAILED"
+
+
 class FakeOutlookAdapter:
     def __init__(
         self,
         envelopes: list[MailEnvelope],
         failing_ids: set[str] | None = None,
+        failing_exceptions: dict[str, Exception] | None = None,
     ) -> None:
         self.envelopes = envelopes
         self.failing_ids = failing_ids or set()
+        self.failing_exceptions = failing_exceptions or {}
         self.list_call_count = 0
         self.last_range: tuple[datetime, datetime] | None = None
 
@@ -96,6 +121,8 @@ class FakeOutlookAdapter:
         return self.envelopes
 
     def open_message(self, entry_id: str) -> MailRecord:
+        if exception := self.failing_exceptions.get(entry_id):
+            raise exception
         if entry_id in self.failing_ids:
             raise RuntimeError("본문을 읽을 수 없습니다.")
         envelope = next(row for row in self.envelopes if row.mail_id == entry_id)

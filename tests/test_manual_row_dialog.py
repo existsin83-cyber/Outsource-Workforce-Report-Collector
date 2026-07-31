@@ -58,3 +58,13 @@ def test_manual_dialog_rejects_invalid_numeric_text(
 
     with pytest.raises(ValueError):
         dialog.values()
+
+
+def test_manual_dialog_shows_validation_error_without_accepting():
+    _app()
+    dialog = ManualRowDialog()
+
+    dialog._accept_if_valid()
+
+    assert dialog.result() == dialog.DialogCode.Rejected
+    assert dialog.error_label.text()

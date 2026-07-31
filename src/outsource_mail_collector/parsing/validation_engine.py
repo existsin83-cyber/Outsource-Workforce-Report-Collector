@@ -14,15 +14,24 @@ from outsource_mail_collector.domain.models import (
 from outsource_mail_collector.parsing.outsource_extractor import AMBIGUOUS_NOTE_PREFIX
 
 
+_STATUS_PRIORITY: dict[ReviewStatus, int] = {
+    ReviewStatus.EQUIPMENT_UNCONFIRMED: 0,
+    ReviewStatus.TRACKING_NO_UNCONFIRMED: 1,
+    ReviewStatus.HEADCOUNT_MISSING: 2,
+    ReviewStatus.NUMBER_UNPARSABLE: 3,
+    ReviewStatus.CUMULATIVE_ONLY: 4,
+    ReviewStatus.DAILY_MAN_DAY_MISSING: 5,
+    ReviewStatus.VENDOR_UNCONFIRMED: 6,
+}
+
+
 def validate(section: EquipmentSection, record: OutsourceWorkRecord) -> ValidationResult:
     issues: list[str] = []
-    status = ReviewStatus.NORMAL
+    statuses: list[ReviewStatus] = []
 
     def flag(issue: str, review_status: ReviewStatus) -> None:
-        nonlocal status
         issues.append(issue)
-        if status is ReviewStatus.NORMAL:
-            status = review_status
+        statuses.append(review_status)
 
     if section.equipment_name is None:
         flag("장비명 없음", ReviewStatus.EQUIPMENT_UNCONFIRMED)
@@ -43,10 +52,8 @@ def validate(section: EquipmentSection, record: OutsourceWorkRecord) -> Validati
     elif record.daily_man_day is None and record.cumulative_man_day is None:
         flag("당일/누적 공수 모두 없음", ReviewStatus.DAILY_MAN_DAY_MISSING)
 
-    if not issues:
-        record.review_status = ReviewStatus.NORMAL
-    else:
-        record.review_status = status
+    status = min(statuses, key=_STATUS_PRIORITY.__getitem__, default=ReviewStatus.NORMAL)
+    record.review_status = status
 
     return ValidationResult(
         work_record_id=record.work_record_id,

@@ -15,7 +15,11 @@ from outsource_mail_collector.infrastructure.db.repository import (
     DuplicateEntityError,
     SQLiteRepository,
 )
-from outsource_mail_collector.ui.settings_dialog import SettingsDialog
+from outsource_mail_collector.ui.settings_dialog import (
+    IncompleteWorkOrderError,
+    SettingsDialog,
+    _is_checked,
+)
 from outsource_mail_collector.ui.workers import FolderLoadWorker
 
 
@@ -114,11 +118,13 @@ def test_settings_dialog_saves_new_vendor_and_mapping_in_one_save(tmp_path):
     assert mapping.business_team == "WA"
 
 
-def test_incomplete_work_order_does_not_block_vendor_save(tmp_path):
+def test_incomplete_work_order_blocks_all_settings_mutation(tmp_path):
     _app()
     repository = SQLiteRepository(tmp_path / "collector.db")
+    repository.set_setting("outlook_folder", "Inbox")
     dialog = SettingsDialog(SettingsService(repository, FakeOutlookAdapter()))
 
+    dialog.set_general_values("Inbox/Updated", "", "")
     vendor_row = dialog.add_vendor_row()
     dialog.vendor_table.setItem(vendor_row, 0, QTableWidgetItem("신규 업체"))
     mapping_row = dialog.add_work_order_row()
@@ -126,11 +132,45 @@ def test_incomplete_work_order_does_not_block_vendor_save(tmp_path):
         mapping_row, 0, QTableWidgetItem("AB260202")
     )
 
-    incomplete_rows = dialog.save()
+    with pytest.raises(IncompleteWorkOrderError) as exc_info:
+        dialog.save()
 
-    assert incomplete_rows == [mapping_row]
-    assert repository.list_vendors()[0].canonical_name == "신규 업체"
+    assert exc_info.value.rows == [mapping_row]
+    assert repository.get_setting("outlook_folder") == "Inbox"
+    assert repository.list_vendors() == []
     assert repository.list_work_order_mappings() == []
+
+
+def test_is_checked_returns_false_until_checkbox_is_installed(tmp_path):
+    _app()
+    dialog = SettingsDialog(
+        SettingsService(
+            SQLiteRepository(tmp_path / "collector.db"), FakeOutlookAdapter()
+        )
+    )
+    dialog.vendor_table.insertRow(0)
+
+    assert _is_checked(dialog.vendor_table, 0, 2) is False
+
+
+def test_add_vendor_row_does_not_refresh_before_checkbox_is_installed(tmp_path):
+    _app()
+    dialog = SettingsDialog(
+        SettingsService(
+            SQLiteRepository(tmp_path / "collector.db"), FakeOutlookAdapter()
+        )
+    )
+    refresh_checkbox_states: list[bool] = []
+
+    def record_refresh() -> None:
+        refresh_checkbox_states.append(
+            isinstance(dialog.vendor_table.cellWidget(0, 2), QCheckBox)
+        )
+
+    dialog._refresh_work_order_vendor_combos = record_refresh
+    dialog.add_vendor_row()
+
+    assert refresh_checkbox_states == [True]
 
 
 def test_incomplete_work_order_message_names_missing_vendor(tmp_path, monkeypatch):

@@ -4,6 +4,7 @@ import json
 import sqlite3
 from datetime import date, datetime
 from decimal import Decimal
+from threading import Event, Thread
 
 import pytest
 
@@ -70,6 +71,84 @@ def test_repository_closes_connection_after_each_public_operation(
 
     assert opened
     assert all(connection.closed for connection in opened)
+
+
+def test_repository_connections_enable_wal_and_bounded_busy_timeout(repository):
+    with repository._open_connection() as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 10_000
+
+
+def test_repository_write_waits_for_immediate_transaction_lock(tmp_path, monkeypatch):
+    db_path = tmp_path / "collector.db"
+    repository = SQLiteRepository(db_path)
+    lock_acquired = Event()
+    release_lock = Event()
+    write_started = Event()
+    write_attempted = Event()
+    write_finished = Event()
+    holder_errors: list[BaseException] = []
+    writer_errors: list[BaseException] = []
+
+    real_open_connection = repository_module._open_sqlite_connection
+
+    def observe_writer_connection(path):
+        conn = real_open_connection(path)
+
+        def trace(statement: str) -> None:
+            if statement.lstrip().upper().startswith("INSERT INTO SETTINGS"):
+                write_attempted.set()
+
+        conn.set_trace_callback(trace)
+        return conn
+
+    monkeypatch.setattr(
+        repository_module, "_open_sqlite_connection", observe_writer_connection
+    )
+
+    def hold_write_lock() -> None:
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            lock_acquired.set()
+            if not release_lock.wait(timeout=1):
+                holder_errors.append(TimeoutError("test did not release write lock"))
+        except BaseException as error:
+            holder_errors.append(error)
+        finally:
+            conn.rollback()
+            conn.close()
+
+    def write_setting() -> None:
+        try:
+            write_started.set()
+            repository.set_setting("outlook_folder", "Inbox")
+        except BaseException as error:
+            writer_errors.append(error)
+        finally:
+            write_finished.set()
+
+    lock_holder = Thread(target=hold_write_lock)
+    writer = Thread(target=write_setting)
+    lock_holder.start()
+    try:
+        assert lock_acquired.wait(timeout=1)
+        writer.start()
+        assert write_started.wait(timeout=1)
+        assert write_attempted.wait(timeout=1)
+        assert not write_finished.is_set()
+        release_lock.set()
+        assert write_finished.wait(timeout=1)
+    finally:
+        release_lock.set()
+        writer.join(timeout=1)
+        lock_holder.join(timeout=1)
+
+    assert not writer.is_alive()
+    assert not lock_holder.is_alive()
+    assert holder_errors == []
+    assert writer_errors == []
+    assert repository.get_setting("outlook_folder") == "Inbox"
 
 
 def test_employee_and_vendor_round_trip_normalizes_email(repository):
@@ -236,6 +315,12 @@ def test_additive_migration_preserves_old_rows_and_is_idempotent(tmp_path):
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             )
         }
+        indexes = {
+            row[1]
+            for row in conn.execute(
+                "SELECT type, name FROM sqlite_master WHERE type = 'index'"
+            )
+        }
     assert first.db_path == second.db_path
     assert "sort_order" in vendor_columns
     assert {
@@ -256,6 +341,13 @@ def test_additive_migration_preserves_old_rows_and_is_idempotent(tmp_path):
     assert "deleted_at" in work_report_columns
     assert "night_headcount" in final_report_columns
     assert final_report_columns["per_person_man_day"] == ("TEXT", 1)
+    assert {
+        "idx_extracted_records_mail_entry",
+        "idx_extracted_records_report_date",
+        "idx_work_report_deleted_date",
+        "idx_work_report_tracking_date",
+        "idx_final_reports_invalidated",
+    } <= indexes
 
 
 def test_cumulative_baseline_round_trip_normalizes_quantizes_and_audits(

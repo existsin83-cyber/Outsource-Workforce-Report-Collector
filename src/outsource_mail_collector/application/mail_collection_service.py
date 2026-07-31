@@ -4,6 +4,13 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
 
+try:
+    import pywintypes
+except ImportError:  # pragma: no cover - Outlook support is Windows-only.
+    _OUTLOOK_ERRORS = (OSError, RuntimeError)
+else:
+    _OUTLOOK_ERRORS = (OSError, RuntimeError, pywintypes.com_error)
+
 from outsource_mail_collector.application.errors import OutlookCollectionError
 from outsource_mail_collector.application.models import CollectionError, CollectionResult
 from outsource_mail_collector.infrastructure.db.repository import SQLiteRepository
@@ -43,7 +50,7 @@ class MailCollectionService:
             envelopes = self._outlook.list_messages(
                 folder_path, start_at=start_at, end_at=end_at
             )
-        except (OSError, RuntimeError) as exc:
+        except _OUTLOOK_ERRORS as exc:
             raise OutlookCollectionError(
                 "Outlook 메일 목록을 읽을 수 없습니다. Outlook 실행 및 프로필 상태를 확인해 주세요."
             ) from exc
@@ -73,7 +80,7 @@ class MailCollectionService:
                         update={"sender_email": mail.sender_email.strip().lower()}
                     )
                 )
-            except (OSError, RuntimeError) as exc:
+            except _OUTLOOK_ERRORS as exc:
                 errors.append(
                     CollectionError(
                         mail_id=envelope.mail_id,

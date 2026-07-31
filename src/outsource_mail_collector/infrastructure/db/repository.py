@@ -31,6 +31,10 @@ from outsource_mail_collector.domain.work_report import (
 )
 
 
+_SQLITE_TIMEOUT_SECONDS = 10.0
+_SQLITE_BUSY_TIMEOUT_MS = 10_000
+
+
 class DuplicateEntityError(ValueError):
     """Raised when a unique employee, vendor, or mail identity already exists."""
 
@@ -237,6 +241,22 @@ _MIGRATION_COLUMNS: dict[str, dict[str, str]] = {
     },
 }
 
+# Keep indexes in the migration path as well as schema.sql so existing user
+# databases receive the same hot-path coverage as newly-created databases.
+_MIGRATION_INDEXES: tuple[tuple[str, str], ...] = (
+    ("idx_extracted_records_mail_entry", "extracted_records(mail_entry_id)"),
+    ("idx_extracted_records_report_date", "extracted_records(report_date)"),
+    (
+        "idx_work_report_deleted_date",
+        "work_report_rows(deleted_at, work_date)",
+    ),
+    (
+        "idx_work_report_tracking_date",
+        "work_report_rows(tracking_no, work_date)",
+    ),
+    ("idx_final_reports_invalidated", "final_reports(invalidated_at)"),
+)
+
 _REVIEW_FIELDS = {
     "tracking_no",
     "equipment_name",
@@ -281,12 +301,21 @@ def default_db_path() -> Path:
     return root / "OutsourceMailCollector" / "collector.db"
 
 
+def _open_sqlite_connection(db_path: Path) -> sqlite3.Connection:
+    """Open a connection configured for short concurrent UI and worker operations."""
+
+    conn = sqlite3.connect(db_path, timeout=_SQLITE_TIMEOUT_SECONDS)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute(f"PRAGMA busy_timeout = {_SQLITE_BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA journal_mode = WAL")
+    return conn
+
+
 def init_db(db_path: Path) -> sqlite3.Connection:
     """Create or migrate the SQLite database and return an open connection."""
 
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA foreign_keys = ON")
+    conn = _open_sqlite_connection(db_path)
     schema_sql = resources.files("outsource_mail_collector.infrastructure.db").joinpath(
         "schema.sql"
     ).read_text(encoding="utf-8")
@@ -304,6 +333,11 @@ def _apply_additive_migrations(conn: sqlite3.Connection) -> None:
         for column, definition in columns.items():
             if column not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    for index_name, index_expression in _MIGRATION_INDEXES:
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS {index_name} "
+            f"ON {index_expression}"
+        )
     conn.execute(
         """
         UPDATE vendors
@@ -411,9 +445,8 @@ class SQLiteRepository:
         init_db(self.db_path).close()
 
     def _open_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = _open_sqlite_connection(self.db_path)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
     @contextmanager

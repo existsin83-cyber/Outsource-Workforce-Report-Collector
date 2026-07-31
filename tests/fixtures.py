@@ -111,6 +111,17 @@ FORMAT_D_INLINE_REPORTED_DAILY = """\
 .외주 인원 : 3 명 (야근: 1 명 투입 공수 : 3.5)
 """
 
+# Parser regression inputs. Keep these anonymized as Python strings because
+# local DRM tooling can interfere with standalone text fixtures.
+CUMULATIVE_MAN_DAY_VARIANTS = (
+    ("누적 공수 : 9", 9.0),
+    ("누적 공수: 9 MD", 9.0),
+    ("누적 공수 : 18.5공수", 18.5),
+)
+
+TOTAL_INPUT_MAN_DAY = "외주 인원 : 1명 (야근 : 0명) 총 투입 공수 : 100"
+TOTAL_AND_DAILY_MAN_DAY = "외주 인원 : 1명 총  투입 공수 : 100\n투입 공수 : 2"
+
 DATE_SUBJECT_UNDERSCORE = "26_07_29 (수) 일일 업무보고"
 DATE_SUBJECT_DOTTED = "2026. 07. 29. 외주 작업보고"
 DATE_SUBJECT_KOREAN = "7월 29일 일일 업무보고"

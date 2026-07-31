@@ -5,6 +5,13 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
+try:
+    import pywintypes
+except ImportError:  # pragma: no cover - Outlook support is Windows-only.
+    _OUTLOOK_ERRORS = (OSError, RuntimeError, ValueError)
+else:
+    _OUTLOOK_ERRORS = (OSError, RuntimeError, ValueError, pywintypes.com_error)
+
 from PySide6.QtCore import QDate
 from PySide6.QtWidgets import (
     QComboBox,
@@ -223,6 +230,8 @@ class MainWindow(QMainWindow):
         self._last_target_count = len(
             self._services.settings_service.list_employees(active_only=True)
         )
+        self._last_received_count = 0
+        self._last_missing_names = ()
         self._apply_rows(result.rows)
 
     def _apply_rows(self, rows: tuple[WorkReportRow, ...]) -> None:
@@ -499,7 +508,7 @@ class MainWindow(QMainWindow):
             return
         try:
             self._services.review_service.open_original(mail_entry_id)
-        except (OSError, RuntimeError, ValueError) as exc:
+        except _OUTLOOK_ERRORS as exc:
             QMessageBox.warning(self, "원본 메일 열기 실패", str(exc))
 
     def _open_settings(self) -> None:

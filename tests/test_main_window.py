@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QToolButton
+import pywintypes
 
 import outsource_mail_collector.ui.main_window as main_window_module
 from outsource_mail_collector.application.models import (
@@ -64,6 +65,54 @@ def test_apply_collection_result_populates_extended_work_rows():
     assert window.summary_value("대상 인원") == "2"
     assert window.summary_value("수신 메일") == "2"
     assert "김철수" in window.missing_banner.text()
+
+
+def test_reload_rows_clears_collection_only_received_and_missing_state():
+    _app()
+    services = _services()
+    window = MainWindow(services)
+    workflow = CollectionWorkflowResult(
+        collection=CollectionResult(
+            mails=(),
+            missing_employees=(
+                SimpleNamespace(name="김철수", email="kim@example.com"),
+            ),
+            errors=(),
+            target_employee_count=2,
+            received_mail_count=2,
+        ),
+        extraction=ExtractionResult(records=(), skipped_mail_ids=(), errors=()),
+        records=(),
+        work_report_rows=(_row(2),),
+    )
+    window.apply_collection_result(workflow)
+
+    window._reload_rows()
+
+    assert window.summary_value("수신 메일") == "0"
+    assert window.summary_value("미보고") == "0"
+    assert window.missing_banner.isHidden()
+
+
+def test_open_original_shows_warning_for_com_error(monkeypatch):
+    _app()
+    services = _services()
+    services.review_service = SimpleNamespace(
+        open_original=lambda _mail_id: (_ for _ in ()).throw(
+            pywintypes.com_error(-1, "Outlook item is unavailable", None, None)
+        )
+    )
+    window = MainWindow(services)
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, text: warnings.append(text),
+    )
+
+    window._open_original("ENTRY-1")
+
+    assert warnings == ["(-1, 'Outlook item is unavailable', None, None)"]
 
 
 def test_manual_row_button_calls_work_report_service(monkeypatch):
