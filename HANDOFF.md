@@ -56,6 +56,74 @@
 
 ## 세션 기록
 
+## 2026-07-31 10:42:28 KST — GitHub 원격 등록 및 master 푸시
+
+### 세션 정보
+
+- 작업 주체: Codex
+- 세션 ID: 확인 불가
+- 작업 디렉터리: `D:\My_Work\Outsource Workforce Report Collector`
+- Git 브랜치: `master`
+- 시작 커밋: `dd3394d`
+
+### 1. 세션 목표
+
+- 사용자가 제공한 GitHub 저장소를 `origin`으로 등록하고 검증된 `master`를 푸시한다.
+
+### 2. 시작 시점 상태
+
+- 로컬 `master`에 기능 커밋 `45c9ed6`과 병합 기록 커밋 `dd3394d`가 있었다.
+- 등록된 Git 원격은 없었고 기존 사용자 미추적 파일은 그대로 존재했다.
+
+### 3. 핵심 결정
+
+- 제공받은 정확한 URL만 사용하고, 빈 원격임을 fetch로 확인한 뒤 최초 푸시했다.
+
+### 4. 수행 내용
+
+- `origin`을 `https://github.com/existsin83-cyber/Outsource-Workforce-Report-Collector.git`로 등록했다.
+- GitHub CLI 설치와 `existsin83-cyber` 계정 인증을 확인했다.
+- 원격에 기존 브랜치가 없음을 확인하고 `master`를 최초 푸시했다.
+
+### 5. 변경 파일
+
+- `HANDOFF.md`: 원격 등록·인증·푸시 결과 기록.
+
+### 6. 검증 결과
+
+- `gh version 2.96.0`.
+- `gh auth status`: `existsin83-cyber` 활성 계정 인증 성공.
+- `git fetch origin --prune`: 성공, 기존 `origin/master` 없음.
+- `git push -u origin master`: 성공, `master -> master`, upstream 설정 완료.
+
+### 7. 실패 및 미확인 사항
+
+- 실제 Outlook·Excel·live DB·사용자 데스크톱 GUI 검증은 실행하지 않았다.
+
+### 8. 현재 상태
+
+- GitHub 원격 등록과 `master` 최초 푸시: 완료.
+- 실환경 검증: 필요.
+
+### 9. 다음 세션 실행 순서
+
+1. 필요 시 복사한 DB와 제한된 날짜 범위로 migration 및 실제 GUI를 검증한다.
+
+### 10. 위험 및 주의사항
+
+- Outlook 읽기 전용 및 Excel 사전 백업 규칙을 유지한다.
+
+### 11. Git 및 변경 경계
+
+- 기존 사용자 미추적 파일은 스테이징·수정하지 않았다.
+- 원격: `origin`.
+- 푸시 브랜치: `master`.
+
+### 12. 이전 기록 정정
+
+- 바로 이전 기록의 “원격 미등록으로 푸시 차단” 상태는 사용자가 원격 URL을 제공하고
+  GitHub CLI 인증이 확인되어 해소되었다.
+
 ## 2026-07-31 10:24:03 KST — Tracking No. 누적 대시보드 병합 및 푸시 준비
 
 ### 세션 정보
