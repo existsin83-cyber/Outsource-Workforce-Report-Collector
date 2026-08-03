@@ -29,13 +29,97 @@ def test_preview_blocks_included_warning_until_individually_confirmed(tmp_path):
     )
     service = FinalReportService(repository)
 
-    preview = service.preview(date(2026, 7, 29), date(2026, 7, 29))
+    preview = service.preview()
 
     assert preview.can_confirm is False
     assert preview.blockers[0].row_id == row.row_id
     assert preview.blockers[0].code == "WARNING_UNCONFIRMED"
     with pytest.raises(FinalizationError):
-        service.confirm(date(2026, 7, 29), date(2026, 7, 29))
+        service.confirm()
+
+
+def test_preview_uses_all_active_dashboard_dates_and_derives_snapshot_range(
+    tmp_path,
+):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    _create_ready_row(
+        repository,
+        vendor_name="업체A",
+        tracking_no="A-01",
+        work_date=date(2026, 7, 13),
+    )
+    _create_ready_row(
+        repository,
+        vendor_name="업체A",
+        tracking_no="A-01",
+        work_date=date(2026, 7, 29),
+        confirmed_cumulative_man_day=Decimal("6.0"),
+    )
+
+    preview = FinalReportService(repository).preview()
+
+    assert [row.work_date for row in preview.rows] == [
+        date(2026, 7, 13),
+        date(2026, 7, 29),
+    ]
+    assert (preview.date_from, preview.date_to) == (
+        date(2026, 7, 13),
+        date(2026, 7, 29),
+    )
+
+
+def test_preview_omits_completed_tracking_but_keeps_other_active_tracking(
+    tmp_path,
+):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    _create_ready_row(repository, vendor_name="업체A", tracking_no="A-01")
+    _create_ready_row(repository, vendor_name="업체B", tracking_no="B-01")
+    repository.complete_tracking("A-01")
+
+    preview = FinalReportService(repository).preview()
+
+    assert [row.tracking_no for row in preview.rows] == ["B-01"]
+
+
+def test_confirm_snapshots_the_same_active_dashboard_range_as_preview(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    _create_ready_row(
+        repository,
+        vendor_name="업체A",
+        tracking_no="A-01",
+        work_date=date(2026, 7, 13),
+    )
+    _create_ready_row(
+        repository,
+        vendor_name="업체B",
+        tracking_no="B-01",
+        work_date=date(2026, 7, 29),
+    )
+    repository.complete_tracking("A-01")
+    service = FinalReportService(repository)
+
+    preview = service.preview()
+    snapshot = service.confirm()
+
+    assert [row.tracking_no for row in preview.rows] == ["B-01"]
+    assert (snapshot.date_from, snapshot.date_to) == (
+        date(2026, 7, 29),
+        date(2026, 7, 29),
+    )
+    assert [row.tracking_no for row in snapshot.rows] == ["B-01"]
+
+
+def test_empty_active_dashboard_cannot_confirm_or_create_snapshot(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    service = FinalReportService(repository)
+
+    preview = service.preview()
+
+    assert preview.rows == ()
+    assert preview.can_confirm is False
+    assert (preview.date_from, preview.date_to) == (None, None)
+    with pytest.raises(ValueError, match="활성"):
+        service.confirm()
 
 
 @pytest.mark.parametrize(
@@ -56,9 +140,7 @@ def test_preview_blocks_structural_issues(tmp_path, issue):
         warning_confirmed=True,
     )
 
-    preview = FinalReportService(repository).preview(
-        date(2026, 7, 29), date(2026, 7, 29)
-    )
+    preview = FinalReportService(repository).preview()
 
     assert preview.can_confirm is False
     assert preview.blockers[0].code == issue.value
@@ -72,9 +154,7 @@ def test_preview_explains_how_to_fix_unregistered_work_order(tmp_path):
         issue_codes=(WorkReportIssueCode.WORK_ORDER_UNREGISTERED,),
     )
 
-    preview = FinalReportService(repository).preview(
-        date(2026, 7, 29), date(2026, 7, 29)
-    )
+    preview = FinalReportService(repository).preview()
 
     blocker = next(
         item
@@ -94,9 +174,7 @@ def test_preview_names_the_missing_confirmed_man_day_field(tmp_path):
         confirmed_cumulative_man_day=Decimal("12.0"),
     )
 
-    preview = FinalReportService(repository).preview(
-        date(2026, 7, 29), date(2026, 7, 29)
-    )
+    preview = FinalReportService(repository).preview()
 
     blocker = next(
         item
@@ -117,9 +195,7 @@ def test_preview_names_each_missing_required_field(tmp_path):
         business_team=None,
     )
 
-    preview = FinalReportService(repository).preview(
-        date(2026, 7, 29), date(2026, 7, 29)
-    )
+    preview = FinalReportService(repository).preview()
 
     blocker = next(
         item
@@ -130,7 +206,7 @@ def test_preview_names_each_missing_required_field(tmp_path):
     assert "Tracking No. 또는 장비명" in blocker.message
 
 
-def test_excluded_rows_do_not_block_finalization(tmp_path):
+def test_excluded_rows_are_absent_from_the_active_dashboard(tmp_path):
     repository = SQLiteRepository(tmp_path / "collector.db")
     _create_ready_row(
         repository,
@@ -140,11 +216,9 @@ def test_excluded_rows_do_not_block_finalization(tmp_path):
         review_status=ReviewStatus.EXCLUDED,
     )
 
-    preview = FinalReportService(repository).preview(
-        date(2026, 7, 29), date(2026, 7, 29)
-    )
+    preview = FinalReportService(repository).preview()
 
-    assert preview.can_confirm is True
+    assert preview.can_confirm is False
     assert preview.rows == ()
 
 
@@ -162,9 +236,7 @@ def test_preview_allows_mixed_headcount_without_uniform_per_person_value(
         confirmed_cumulative_man_day=Decimal("20.0"),
     )
 
-    preview = FinalReportService(repository).preview(
-        date(2026, 7, 29), date(2026, 7, 29)
-    )
+    preview = FinalReportService(repository).preview()
 
     assert preview.can_confirm is True
 
@@ -179,9 +251,7 @@ def test_preview_blocks_unresolved_night_headcount(tmp_path):
         warning_confirmed=True,
     )
 
-    preview = FinalReportService(repository).preview(
-        date(2026, 7, 29), date(2026, 7, 29)
-    )
+    preview = FinalReportService(repository).preview()
 
     assert preview.can_confirm is False
 
@@ -209,9 +279,7 @@ def test_preview_blocks_invalid_headcount_relationship_without_issue_code(
         issue_codes=(),
     )
 
-    preview = FinalReportService(repository).preview(
-        date(2026, 7, 29), date(2026, 7, 29)
-    )
+    preview = FinalReportService(repository).preview()
 
     assert preview.can_confirm is False
     assert any(
@@ -249,9 +317,7 @@ def test_preview_orders_daily_aggregates_by_tracking_number(tmp_path):
         repository, vendor_name="업체B", tracking_no="B-01"
     )
 
-    preview = FinalReportService(repository).preview(
-        date(2026, 7, 29), date(2026, 7, 29)
-    )
+    preview = FinalReportService(repository).preview()
 
     assert [
         (row.vendor_name, row.tracking_no) for row in preview.rows
@@ -302,7 +368,7 @@ def test_same_day_tracking_rows_aggregate_and_snapshot_all_sources(tmp_path):
     )
     service = FinalReportService(repository)
 
-    preview = service.preview(date(2026, 7, 29), date(2026, 7, 29))
+    preview = service.preview()
 
     assert preview.can_confirm is True
     assert len(preview.rows) == 1
@@ -320,7 +386,7 @@ def test_same_day_tracking_rows_aggregate_and_snapshot_all_sources(tmp_path):
     assert row.calculated_cumulative_man_day == Decimal("24.0")
     assert row.confirmed_cumulative_man_day == Decimal("24.0")
 
-    snapshot = service.confirm(date(2026, 7, 29), date(2026, 7, 29))
+    snapshot = service.confirm()
 
     assert len(snapshot.rows) == 1
     assert snapshot.rows[0].source_row_id == second.row_id
@@ -353,7 +419,7 @@ def test_snapshot_hash_changes_when_contributors_change_but_values_match(
         confirmed_cumulative_man_day=Decimal("15.0"),
     )
     service = FinalReportService(repository)
-    combined = service.confirm(date(2026, 7, 29), date(2026, 7, 29))
+    combined = service.confirm()
 
     repository.update_work_report_row(
         first.row_id,
@@ -376,7 +442,7 @@ def test_snapshot_hash_changes_when_contributors_change_but_values_match(
         confirmed_cumulative_man_day=Decimal("15.0"),
     )
 
-    replaced = service.confirm(date(2026, 7, 29), date(2026, 7, 29))
+    replaced = service.confirm()
 
     assert combined.rows[0].source_row_ids == (first.row_id, second.row_id)
     assert replaced.rows[0].source_row_ids == (replacement.row_id,)
@@ -392,7 +458,7 @@ def test_confirmation_snapshots_confirmed_values_and_source_edit_invalidates(
     row = _create_ready_row(repository, vendor_name="업체A")
     service = FinalReportService(repository)
 
-    first = service.confirm(date(2026, 7, 29), date(2026, 7, 29))
+    first = service.confirm()
     repository.update_work_report_row(
         row.row_id,
         {"confirmed_daily_man_day": Decimal("4.0")},
@@ -402,7 +468,7 @@ def test_confirmation_snapshots_confirmed_values_and_source_edit_invalidates(
 
     assert stored_first.invalidated_at is not None
     assert stored_first.rows[0].confirmed_daily_man_day == Decimal("3.0")
-    second = service.confirm(date(2026, 7, 29), date(2026, 7, 29))
+    second = service.confirm()
     assert second.report_id != first.report_id
     assert second.rows[0].confirmed_daily_man_day == Decimal("4.0")
 
@@ -419,9 +485,7 @@ def test_confirmation_snapshots_mixed_basis_and_night_headcount(tmp_path):
         confirmed_cumulative_man_day=Decimal("20.0"),
     )
 
-    snapshot = FinalReportService(repository).confirm(
-        date(2026, 7, 29), date(2026, 7, 29)
-    )
+    snapshot = FinalReportService(repository).confirm()
 
     assert snapshot.rows[0].night_headcount == 1
     assert snapshot.rows[0].man_day_basis == "혼합"
@@ -439,13 +503,13 @@ def test_snapshot_hash_distinguishes_mixed_night_headcounts(tmp_path):
     )
     service = FinalReportService(repository)
 
-    first = service.confirm(date(2026, 7, 29), date(2026, 7, 29))
+    first = service.confirm()
     repository.update_work_report_row(
         row.row_id,
         {"night_headcount": 2},
         resolution_note="야근 인원 정정",
     )
-    second = service.confirm(date(2026, 7, 29), date(2026, 7, 29))
+    second = service.confirm()
 
     assert first.rows[0].man_day_basis == "혼합"
     assert second.rows[0].man_day_basis == "혼합"
@@ -524,13 +588,14 @@ def _create_ready_row(
     confirmed_cumulative_man_day: Decimal | None = Decimal("12.0"),
     included: bool = True,
     review_status: ReviewStatus = ReviewStatus.REVIEWED,
+    work_date: date = date(2026, 7, 29),
 ):
     if reported_cumulative_man_day is None:
         reported_cumulative_man_day = confirmed_cumulative_man_day
     if calculated_cumulative_man_day is None:
         calculated_cumulative_man_day = confirmed_cumulative_man_day
     return repository.create_manual_report_row(
-        work_date=date(2026, 7, 29),
+        work_date=work_date,
         work_date_confirmed=True,
         vendor_name=vendor_name,
         tracking_no=tracking_no,

@@ -78,14 +78,25 @@ class TrackingDashboardService:
             )
         )
 
-    def summaries(self) -> tuple[TrackingDashboardSummary, ...]:
+    def summaries(
+        self, *, include_completed: bool = False
+    ) -> tuple[TrackingDashboardSummary, ...]:
+        statuses = {
+            status.normalized_tracking_no: status
+            for status in self._repository.list_tracking_work_status()
+        }
         grouped: dict[str, list[TrackingDailyAggregate]] = defaultdict(list)
         for aggregate in self._all_daily_aggregates():
             if aggregate.normalized_tracking_no:
                 grouped[aggregate.normalized_tracking_no].append(aggregate)
         summaries = [
-            self._summary_for_tracking(tracking_no, rows)
+            self._summary_for_tracking(
+                tracking_no, rows, statuses.get(tracking_no)
+            )
             for tracking_no, rows in grouped.items()
+            if include_completed
+            or statuses.get(tracking_no) is None
+            or statuses[tracking_no].completed_at is None
         ]
         return tuple(
             sorted(
@@ -93,6 +104,48 @@ class TrackingDashboardService:
                 key=lambda item: item.normalized_tracking_no,
             )
         )
+
+    def active_daily_aggregates(self) -> tuple[TrackingDailyAggregate, ...]:
+        """Return the default dashboard projection, excluding completed work."""
+
+        completed = {
+            status.normalized_tracking_no
+            for status in self._repository.list_tracking_work_status()
+            if status.completed_at is not None
+        }
+        return tuple(
+            aggregate
+            for aggregate in self._all_daily_aggregates()
+            if aggregate.normalized_tracking_no not in completed
+        )
+
+    def completed_summaries(self) -> tuple[TrackingDashboardSummary, ...]:
+        """Return completed Tracking-No projections for the recovery screen."""
+
+        return tuple(
+            summary
+            for summary in self.summaries(include_completed=True)
+            if summary.completed_at is not None
+        )
+
+    def set_start_date(self, tracking_no: str, start_date: date):
+        return self._repository.set_tracking_start_date(tracking_no, start_date)
+
+    def complete(self, tracking_no: str):
+        rows = self.drill_down(tracking_no)
+        if not rows:
+            raise ValueError("존재하지 않는 Tracking No.입니다.")
+        status = self._repository.get_tracking_work_status(tracking_no)
+        start_date = status.start_date if status is not None else None
+        if start_date is None:
+            dates = [row.work_date for row in rows if row.work_date is not None]
+            start_date = min(dates) if dates else None
+        return self._repository.complete_tracking(tracking_no, start_date=start_date)
+
+    def resume(self, tracking_no: str):
+        if not self.drill_down(tracking_no):
+            raise ValueError("존재하지 않는 Tracking No.입니다.")
+        return self._repository.resume_tracking(tracking_no)
 
     def drill_down(self, tracking_no: str) -> tuple[WorkReportRow, ...]:
         normalized = normalize_tracking_no(tracking_no)
@@ -208,6 +261,7 @@ class TrackingDashboardService:
         self,
         normalized: str,
         aggregates: list[TrackingDailyAggregate],
+        status=None,
     ) -> TrackingDashboardSummary:
         latest = next(
             (
@@ -252,6 +306,15 @@ class TrackingDashboardService:
                 for source_id in aggregate.source_row_ids
             ),
             blockers=blockers,
+            start_date=(
+                status.start_date
+                if status is not None and status.start_date is not None
+                else min(
+                    (row.work_date for row in aggregates if row.work_date),
+                    default=None,
+                )
+            ),
+            completed_at=status.completed_at if status is not None else None,
         )
 
 

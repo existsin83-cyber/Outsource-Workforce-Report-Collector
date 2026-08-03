@@ -385,6 +385,29 @@ def test_cumulative_baseline_round_trip_normalizes_quantizes_and_audits(
     ] == ["legacy total checked", "effective date corrected"]
 
 
+def test_tracking_work_status_round_trip_supports_start_complete_and_resume(
+    tmp_path,
+):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+
+    created = repository.set_tracking_start_date(
+        " ab 26 01 01 ", date(2026, 7, 29)
+    )
+    assert created.normalized_tracking_no == "AB260101"
+    assert created.start_date == date(2026, 7, 29)
+    assert created.completed_at is None
+
+    completed = repository.complete_tracking("AB260101")
+    assert completed.completed_at is not None
+    assert repository.list_tracking_work_status(completed_only=True) == [
+        completed
+    ]
+
+    resumed = repository.resume_tracking("AB260101")
+    assert resumed.completed_at is None
+    assert repository.list_tracking_work_status(completed_only=True) == []
+
+
 def test_legacy_work_rows_are_backfilled_by_tracking_without_data_loss(
     tmp_path,
 ):

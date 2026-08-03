@@ -53,6 +53,7 @@ class FinalReportDialog(QDialog):
         self.snapshot: FinalReportSnapshot | None = None
         self.rendered_report: RenderedReport | None = None
         layout = QVBoxLayout(self)
+        self._layout = layout
         self.blocker_label = QLabel(_blocker_text(preview))
         self.blocker_label.setWordWrap(True)
         self.blocker_label.setTextInteractionFlags(
@@ -63,8 +64,19 @@ class FinalReportDialog(QDialog):
                 "background:#ffebee;color:#c62828;padding:8px;"
             )
         layout.addWidget(self.blocker_label)
-        self.preview_table = _preview_table(preview.rows)
+        self.preview_table = _preview_table(preview.rows, preview.blockers)
         layout.addWidget(self.preview_table)
+        self.blocker_details_label = QLabel(_blocker_details_text(preview))
+        self.blocker_details_label.setWordWrap(True)
+        self.blocker_details_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.blocker_details_label.setStyleSheet(
+            "background:#fff8e1;color:#5d4037;padding:8px;"
+            if preview.blockers
+            else ""
+        )
+        layout.addWidget(self.blocker_details_label)
         actions = QHBoxLayout()
         actions.addStretch()
         self.confirm_button = QPushButton("전체 최종 확인")
@@ -79,6 +91,27 @@ class FinalReportDialog(QDialog):
         actions.addWidget(self.copy_button)
         actions.addWidget(close_button)
         layout.addLayout(actions)
+
+    def refresh_preview(self, preview: FinalReportPreview) -> None:
+        """Replace the displayed preview after dashboard state changes."""
+        self.blocker_label.setText(_blocker_text(preview))
+        self.blocker_label.setStyleSheet(
+            "background:#ffebee;color:#c62828;padding:8px;"
+            if preview.blockers
+            else ""
+        )
+        previous_table = self.preview_table
+        self.preview_table = _preview_table(preview.rows, preview.blockers)
+        self._layout.replaceWidget(previous_table, self.preview_table)
+        previous_table.deleteLater()
+        self.blocker_details_label.setText(_blocker_details_text(preview))
+        self.blocker_details_label.setStyleSheet(
+            "background:#fff8e1;color:#5d4037;padding:8px;"
+            if preview.blockers
+            else ""
+        )
+        self.confirm_button.setEnabled(preview.can_confirm)
+        self.invalidate_confirmation()
 
     def set_confirmed_report(
         self,
@@ -98,31 +131,34 @@ class FinalReportDialog(QDialog):
 def _blocker_text(preview: FinalReportPreview) -> str:
     if not preview.blockers:
         return "전체 행을 확인한 뒤 최종 확정해 주세요."
+    return f"확정 전 확인 필요: {len(preview.blockers)}건"
+
+
+def _blocker_details_text(preview: FinalReportPreview) -> str:
+    if not preview.blockers:
+        return "차단 상세: 없음"
     rows_by_id = {row.row_id: row for row in preview.rows}
-    blockers_by_row: dict[int, list[str]] = defaultdict(list)
+    lines = ["차단 상세"]
     for blocker in preview.blockers:
-        if blocker.message not in blockers_by_row[blocker.row_id]:
-            blockers_by_row[blocker.row_id].append(blocker.message)
-    lines = ["최종 확정할 수 없습니다."]
-    for row_id, messages in blockers_by_row.items():
-        row = rows_by_id.get(row_id)
-        context = [f"행 {row_id}"]
-        if row is not None:
-            context.extend(
-                value
-                for value in (
-                    row.work_date.isoformat() if row.work_date else None,
-                    row.vendor_name,
-                    row.tracking_no,
-                )
-                if value
+        row = rows_by_id.get(blocker.row_id)
+        if row is None:
+            context = "행 정보 없음"
+        else:
+            context = (
+                f"작업일: {row.work_date.isoformat() if row.work_date else '미확정'} / "
+                f"업체: {row.vendor_name or '없음'} / "
+                f"Tracking No.: {row.tracking_no or '없음'}"
             )
-        lines.append(" / ".join(context))
-        lines.extend(f"• {message}" for message in messages)
-    return "\n".join(lines)
+        lines.append(
+            f"{context}\n원인: {blocker.message}\n"
+            "조치: 확인 후 확정값을 수정하거나 사유를 기록하세요."
+        )
+    return "\n\n".join(lines)
 
 
-def _preview_table(rows: tuple[WorkReportRow, ...]) -> QTableWidget:
+def _preview_table(
+    rows: tuple[WorkReportRow, ...], blockers=()
+) -> QTableWidget:
     table = QTableWidget(len(rows), len(_HEADERS))
     table.setHorizontalHeaderLabels(_HEADERS)
     table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -132,6 +168,15 @@ def _preview_table(rows: tuple[WorkReportRow, ...]) -> QTableWidget:
         QHeaderView.ResizeMode.ResizeToContents
     )
     table.horizontalHeader().setStretchLastSection(True)
+    blockers_by_row: dict[int, list[str]] = defaultdict(list)
+    # The preview table itself receives blocker details so the banner remains compact.
+    for blocker in blockers:
+        if blocker.message not in blockers_by_row[blocker.row_id]:
+            blockers_by_row[blocker.row_id].append(blocker.message)
+    for row in rows:
+        for blocker in getattr(row, "blockers", ()):
+            if blocker.message not in blockers_by_row[row.row_id]:
+                blockers_by_row[row.row_id].append(blocker.message)
     for column, header in enumerate(_HEADERS):
         help_key = {
             "투입 공수": "확정 투입",
@@ -158,6 +203,11 @@ def _preview_table(rows: tuple[WorkReportRow, ...]) -> QTableWidget:
             item.setToolTip(
                 f"{header_item.toolTip()}\n현재 표시값: {value or '없음'}"
             )
+            details = blockers_by_row.get(row.row_id)
+            if details:
+                item.setToolTip(
+                    item.toolTip() + "\n확인 필요: " + "; ".join(details)
+                )
             table.setItem(row_index, column, item)
     return table
 

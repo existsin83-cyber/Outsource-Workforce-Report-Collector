@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
@@ -21,11 +22,13 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from outsource_mail_collector.application.models import (
+    FinalReportPreview,
     TrackingDashboardSummary,
     WorkReportRow,
 )
@@ -35,6 +38,7 @@ from outsource_mail_collector.application.tracking_dashboard_service import (
 from outsource_mail_collector.application.work_report_service import (
     WorkReportService,
 )
+from outsource_mail_collector.ui.final_report_dialog import FinalReportDialog
 from outsource_mail_collector.ui.work_report_guidance import (
     issue_action,
     issue_title,
@@ -170,28 +174,75 @@ class TrackingDashboardDialog(QDialog):
         work_report_service: WorkReportService,
         refresh_callback: Callable[[], None],
         parent: QWidget | None = None,
+        *,
+        completed_only: bool = False,
+        final_preview: FinalReportPreview | None = None,
+        preview_supplier: Callable[[], FinalReportPreview] | None = None,
     ) -> None:
         super().__init__(parent)
         self._dashboard_service = dashboard_service
         self._work_report_service = work_report_service
         self._refresh_callback = refresh_callback
+        self._preview_supplier = preview_supplier
+        self._completed_only = completed_only
         self._summaries: tuple[TrackingDashboardSummary, ...] = ()
-        self.setWindowTitle("수주 공수 대시보드")
+        self.setWindowTitle(
+            "완료 장비 목록" if completed_only else "수주 공수 대시보드"
+        )
         self.resize(1450, 760)
-        layout = QVBoxLayout(self)
+        root_layout = QVBoxLayout(self)
+        self.final_preview_view: FinalReportDialog | None = None
+        if final_preview is not None and not completed_only:
+            self.tabs = QTabWidget()
+            dashboard_page = QWidget()
+            layout = QVBoxLayout(dashboard_page)
+            self.tabs.addTab(dashboard_page, "수주 공수 대시보드")
+            self.final_preview_view = FinalReportDialog(final_preview, self)
+            self.final_preview_view.setWindowFlags(Qt.WindowType.Widget)
+            self.tabs.addTab(self.final_preview_view, "최종 표 미리보기")
+            root_layout.addWidget(self.tabs)
+        else:
+            self.tabs = None
+            layout = root_layout
         self.summary_table = _table(_SUMMARY_HEADERS)
         self.summary_table.itemSelectionChanged.connect(
             self._load_selected_details
         )
+        self.summary_table.itemSelectionChanged.connect(self._load_start_date)
         layout.addWidget(self.summary_table)
         self.guidance_label = QLabel("Tracking No.를 선택해 상세 내역을 확인하세요.")
         self.guidance_label.setWordWrap(True)
         layout.addWidget(self.guidance_label)
+        date_controls = QHBoxLayout()
+        date_controls.addWidget(QLabel("작업 시작일"))
+        self.start_date_edit = QDateEdit()
+        self.start_date_edit.setCalendarPopup(True)
+        self.save_start_date_button = QPushButton("시작일 저장")
+        self.save_start_date_button.clicked.connect(self._save_start_date)
+        date_controls.addWidget(self.start_date_edit)
+        date_controls.addWidget(self.save_start_date_button)
+        date_controls.addStretch()
+        layout.addLayout(date_controls)
         self.detail_table = _table(_DETAIL_HEADERS)
         layout.addWidget(self.detail_table)
         self.baseline_button = QPushButton("초기 누적 설정")
         self.baseline_button.clicked.connect(self._edit_baseline)
         layout.addWidget(self.baseline_button)
+        self.complete_button = QPushButton("작업 완료")
+        self.complete_button.clicked.connect(self._complete_selected)
+        self.resume_button = QPushButton("작업 재개")
+        self.resume_button.clicked.connect(self._resume_selected)
+        self.resume_button.setVisible(completed_only)
+        self.complete_button.setVisible(not completed_only)
+        actions = QHBoxLayout()
+        actions.addWidget(self.complete_button)
+        actions.addWidget(self.resume_button)
+        if not completed_only:
+            self.completed_list_button = QPushButton("완료 장비 목록")
+            self.completed_list_button.clicked.connect(self._open_completed_list)
+            actions.addWidget(self.completed_list_button)
+        actions.addStretch()
+        layout.addLayout(actions)
         close_buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Close
         )
@@ -201,7 +252,11 @@ class TrackingDashboardDialog(QDialog):
 
     def refresh(self) -> None:
         selected = self._selected_tracking_no()
-        self._summaries = tuple(self._dashboard_service.summaries())
+        self._summaries = tuple(
+            self._dashboard_service.completed_summaries()
+            if self._completed_only
+            else self._dashboard_service.summaries()
+        )
         self.summary_table.setRowCount(len(self._summaries))
         for row_index, summary in enumerate(self._summaries):
             values = (
@@ -234,9 +289,12 @@ class TrackingDashboardDialog(QDialog):
             )
             if selected == summary.normalized_tracking_no:
                 self.summary_table.selectRow(row_index)
+        if self._summaries and self.summary_table.currentRow() < 0:
+            self.summary_table.selectRow(0)
         if not self._summaries:
             self.detail_table.setRowCount(0)
             self.guidance_label.setText("표시할 Tracking No. 집계가 없습니다.")
+        self._load_start_date()
 
     def _selected_tracking_no(self) -> str | None:
         row = self.summary_table.currentRow()
@@ -289,6 +347,85 @@ class TrackingDashboardDialog(QDialog):
             self.guidance_label.setText("현재 최종 표를 차단하는 문제가 없습니다.")
             self.guidance_label.setStyleSheet("")
 
+    def _load_start_date(self) -> None:
+        summary = self._selected_summary()
+        if summary is None or summary.start_date is None:
+            self.start_date_edit.setDate(QDate.currentDate())
+            self.save_start_date_button.setEnabled(False)
+            return
+        self.start_date_edit.setDate(
+            QDate(summary.start_date.year, summary.start_date.month, summary.start_date.day)
+        )
+        self.save_start_date_button.setEnabled(not self._completed_only)
+
+    def _save_start_date(self) -> None:
+        summary = self._selected_summary()
+        if summary is None:
+            return
+        selected = self.start_date_edit.date()
+        self._dashboard_service.set_start_date(
+            summary.tracking_no, date(selected.year(), selected.month(), selected.day())
+        )
+        self.refresh()
+        self._refresh_final_preview()
+        self._refresh_callback()
+
+    def _complete_selected(self) -> None:
+        summary = self._selected_summary()
+        if summary is None:
+            return
+        QMessageBox.information(
+            self, "작업 완료 안내", "완료된 Tracking No.는 기본 대시보드에서 숨겨집니다."
+        )
+        if summary.blockers:
+            QMessageBox.warning(
+                self,
+                "확인 전 경고",
+                f"확정 전 확인 필요 항목이 {len(summary.blockers)}건 있습니다. 그래도 완료할 수 있습니다.",
+            )
+        answer = QMessageBox.question(
+            self,
+            "작업 완료 재확인",
+            f"{summary.tracking_no} 작업을 완료 처리하시겠습니까?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._dashboard_service.complete(summary.tracking_no)
+        self.refresh()
+        self._refresh_final_preview()
+        self._refresh_callback()
+
+    def _resume_selected(self) -> None:
+        summary = self._selected_summary()
+        if summary is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "작업 재개",
+            f"{summary.tracking_no} 작업을 다시 대시보드에 표시하시겠습니까?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._dashboard_service.resume(summary.tracking_no)
+        self.refresh()
+        self._refresh_final_preview()
+        self._refresh_callback()
+
+    def _open_completed_list(self) -> None:
+        dialog = CompletedTrackingDialog(
+            self._dashboard_service,
+            self._work_report_service,
+            self._refresh_callback,
+            self,
+        )
+        dialog.exec()
+        self.refresh()
+        self._refresh_final_preview()
+
     def _edit_baseline(self) -> None:
         summary = self._selected_summary()
         if summary is None:
@@ -320,7 +457,15 @@ class TrackingDashboardDialog(QDialog):
             QMessageBox.warning(self, "초기 누적 저장 실패", str(exc))
             return
         self.refresh()
+        self._refresh_final_preview()
         self._refresh_callback()
+
+    def _refresh_final_preview(self) -> None:
+        if (
+            self.final_preview_view is not None
+            and self._preview_supplier is not None
+        ):
+            self.final_preview_view.refresh_preview(self._preview_supplier())
 
 
 def _table(headers: tuple[str, ...]) -> QTableWidget:
@@ -370,3 +515,22 @@ def _value_text(value: object | None) -> str:
 
 def _decimal_text(value: Decimal | None) -> str:
     return "" if value is None else f"{value:.1f}"
+
+
+class CompletedTrackingDialog(TrackingDashboardDialog):
+    """Completed Tracking-No list with the same drill-down and resume UI."""
+
+    def __init__(
+        self,
+        dashboard_service: TrackingDashboardService,
+        work_report_service: WorkReportService,
+        refresh_callback: Callable[[], None],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(
+            dashboard_service,
+            work_report_service,
+            refresh_callback,
+            parent,
+            completed_only=True,
+        )

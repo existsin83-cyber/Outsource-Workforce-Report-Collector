@@ -37,33 +37,39 @@ class FinalReportService:
         self._repository = repository
         self._dashboard = TrackingDashboardService(repository)
 
-    def preview(self, date_from: date, date_to: date) -> FinalReportPreview:
-        if date_from > date_to:
-            raise ValueError("시작일은 종료일보다 늦을 수 없습니다.")
-        rows = self._dashboard.daily_aggregates(date_from, date_to)
+    def preview(self) -> FinalReportPreview:
+        rows = self._dashboard.active_daily_aggregates()
         blockers = tuple(
             blocker
             for row in rows
             for blocker in row.blockers
         )
         return FinalReportPreview(
-            date_from=date_from,
-            date_to=date_to,
+            date_from=min(
+                (row.work_date for row in rows if row.work_date is not None),
+                default=None,
+            ),
+            date_to=max(
+                (row.work_date for row in rows if row.work_date is not None),
+                default=None,
+            ),
             rows=rows,
             blockers=blockers,
         )
 
-    def confirm(
-        self, date_from: date, date_to: date
-    ) -> FinalReportSnapshot:
-        preview = self.preview(date_from, date_to)
+    def confirm(self) -> FinalReportSnapshot:
+        preview = self.preview()
+        if not preview.rows:
+            raise ValueError("활성 대시보드 행이 없어 최종 표를 확정할 수 없습니다.")
         if preview.blockers:
             raise FinalizationError(preview.blockers)
+        if preview.date_from is None or preview.date_to is None:
+            raise ValueError("작업일이 없는 행은 최종 표를 확정할 수 없습니다.")
         snapshot_hash = _snapshot_hash(preview.rows)
         snapshot_rows = [_snapshot_input(row) for row in preview.rows]
         stored = self._repository.create_final_report_snapshot(
-            date_from=date_from,
-            date_to=date_to,
+            date_from=preview.date_from,
+            date_to=preview.date_to,
             rows=snapshot_rows,
             snapshot_hash=snapshot_hash,
         )

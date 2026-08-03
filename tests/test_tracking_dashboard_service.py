@@ -2,6 +2,8 @@ from datetime import date
 from decimal import Decimal
 from importlib import import_module
 
+import pytest
+
 from outsource_mail_collector.domain.models import ReviewStatus
 from outsource_mail_collector.domain.work_report import WorkReportIssueCode
 from outsource_mail_collector.infrastructure.db.repository import SQLiteRepository
@@ -55,6 +57,77 @@ def test_dashboard_has_one_lifetime_summary_and_separate_daily_rows(tmp_path):
     assert summary.initial_cumulative_man_day == Decimal("20.0")
     assert summary.latest_confirmed_cumulative_man_day == Decimal("25.0")
     assert summary.source_row_ids == (first.row_id, second.row_id)
+
+
+def test_dashboard_separates_completed_tracking_numbers_and_preserves_start_date(
+    tmp_path,
+):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    _create_row(
+        repository,
+        work_date=date(2026, 7, 29),
+        confirmed_daily=Decimal("3.0"),
+        reported_cumulative=Decimal("3.0"),
+        calculated_cumulative=Decimal("3.0"),
+        confirmed_cumulative=Decimal("3.0"),
+    )
+    service = _dashboard_service(repository)
+    service.set_start_date("AB260101", date(2026, 7, 28))
+    service.complete("AB260101")
+
+    assert service.summaries() == ()
+    completed = service.completed_summaries()
+    assert len(completed) == 1
+    assert completed[0].start_date == date(2026, 7, 28)
+    service.resume("AB260101")
+    assert len(service.summaries()) == 1
+
+
+def test_active_daily_aggregates_exclude_completed_tracking_and_keep_drill_down(
+    tmp_path,
+):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    completed_row = _create_row(repository, tracking_no="A-01")
+    _create_row(repository, tracking_no="B-01")
+    service = _dashboard_service(repository)
+    service.complete("A-01")
+
+    active = service.active_daily_aggregates()
+
+    assert [row.tracking_no for row in active] == ["B-01"]
+    assert [row.row_id for row in service.drill_down("A-01")] == [
+        completed_row.row_id
+    ]
+
+
+def test_completion_rejects_unknown_tracking_without_creating_status(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    service = _dashboard_service(repository)
+
+    with pytest.raises(ValueError, match="존재하지"):
+        service.complete("UNKNOWN")
+    with pytest.raises(ValueError, match="존재하지"):
+        service.resume("UNKNOWN")
+    assert repository.list_tracking_work_status() == []
+
+
+def test_completion_uses_first_work_date_and_records_one_completion_action(
+    tmp_path,
+):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    _create_row(repository, work_date=date(2026, 7, 30))
+    _create_row(repository, work_date=date(2026, 7, 29))
+    service = _dashboard_service(repository)
+
+    service.complete("AB260101")
+
+    status = repository.get_tracking_work_status("AB260101")
+    assert status is not None
+    assert status.start_date == date(2026, 7, 29)
+    assert status.completed_at is not None
+    assert [log.action for log in repository.list_action_logs()[-1:]] == [
+        "TRACKING_COMPLETED"
+    ]
 
 
 def test_dashboard_calculates_baseline_plus_confirmed_daily(tmp_path):
@@ -243,9 +316,7 @@ def test_cross_date_identity_conflict_blocks_lifetime_and_final_preview(
     dashboard = _dashboard_service(repository)
 
     summary = dashboard.summaries()[0]
-    preview = _final_report_service(repository).preview(
-        date(2026, 7, 28), date(2026, 7, 29)
-    )
+    preview = _final_report_service(repository).preview()
 
     assert summary.source_row_ids == (first.row_id, second.row_id)
     assert summary.vendor_name is None
@@ -330,9 +401,7 @@ def test_unresolved_date_row_remains_visible_and_blocks_finalization(tmp_path):
     final_report = _final_report_service(repository)
 
     summaries = dashboard.summaries()
-    preview = final_report.preview(
-        date(2026, 7, 28), date(2026, 7, 29)
-    )
+    preview = final_report.preview()
 
     assert len(summaries) == 1
     summary = summaries[0]
@@ -357,7 +426,7 @@ def test_unresolved_date_row_remains_visible_and_blocks_finalization(tmp_path):
     import pytest
 
     with pytest.raises(FinalizationError):
-        final_report.confirm(date(2026, 7, 28), date(2026, 7, 29))
+        final_report.confirm()
 
 
 def test_missing_tracking_blocks_even_when_equipment_is_present(tmp_path):

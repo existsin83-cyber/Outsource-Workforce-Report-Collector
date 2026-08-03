@@ -82,6 +82,16 @@ class CumulativeBaseline:
 
 
 @dataclass(frozen=True)
+class TrackingWorkStatus:
+    normalized_tracking_no: str
+    tracking_no: str
+    start_date: date | None
+    completed_at: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
 class StoredReviewRecord:
     record_id: int
     mail_entry_id: str
@@ -255,6 +265,10 @@ _MIGRATION_INDEXES: tuple[tuple[str, str], ...] = (
         "work_report_rows(tracking_no, work_date)",
     ),
     ("idx_final_reports_invalidated", "final_reports(invalidated_at)"),
+    (
+        "idx_tracking_work_status_completed",
+        "tracking_work_status(completed_at, normalized_tracking_no)",
+    ),
 )
 
 _REVIEW_FIELDS = {
@@ -885,6 +899,133 @@ class SQLiteRepository:
                 """
             ).fetchall()
         return [_cumulative_baseline_from_row(row) for row in rows]
+
+    def set_tracking_start_date(
+        self, tracking_no: str, start_date: date
+    ) -> TrackingWorkStatus:
+        normalized = normalize_tracking_no(tracking_no)
+        display = tracking_no.strip()
+        if not normalized:
+            raise ValueError("Tracking No.는 필수입니다.")
+        now = _utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO tracking_work_status(
+                    normalized_tracking_no, tracking_no, start_date,
+                    completed_at, created_at, updated_at
+                ) VALUES (?, ?, ?, NULL, ?, ?)
+                ON CONFLICT(normalized_tracking_no) DO UPDATE SET
+                    tracking_no = excluded.tracking_no,
+                    start_date = excluded.start_date,
+                    updated_at = excluded.updated_at
+                """,
+                (normalized, display, start_date.isoformat(), now, now),
+            )
+            row = conn.execute(
+                """SELECT * FROM tracking_work_status
+                   WHERE normalized_tracking_no = ?""",
+                (normalized,),
+            ).fetchone()
+            assert row is not None
+            _insert_action_log(
+                conn,
+                "TRACKING_START_DATE_SAVED",
+                normalized,
+                None,
+                json.dumps(_json_safe(_tracking_work_status_from_row(row)), ensure_ascii=False),
+            )
+        return _tracking_work_status_from_row(row)
+
+    def complete_tracking(
+        self, tracking_no: str, *, start_date: date | None = None
+    ) -> TrackingWorkStatus:
+        return self._set_tracking_completion(tracking_no, _utc_now(), start_date)
+
+    def resume_tracking(self, tracking_no: str) -> TrackingWorkStatus:
+        return self._set_tracking_completion(tracking_no, None)
+
+    def list_tracking_work_status(
+        self, *, completed_only: bool = False
+    ) -> list[TrackingWorkStatus]:
+        condition = "WHERE completed_at IS NOT NULL" if completed_only else ""
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""SELECT * FROM tracking_work_status {condition}
+                    ORDER BY normalized_tracking_no"""
+            ).fetchall()
+        return [_tracking_work_status_from_row(row) for row in rows]
+
+    def get_tracking_work_status(
+        self, tracking_no: str
+    ) -> TrackingWorkStatus | None:
+        normalized = normalize_tracking_no(tracking_no)
+        if not normalized:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT * FROM tracking_work_status
+                   WHERE normalized_tracking_no = ?""",
+                (normalized,),
+            ).fetchone()
+        return None if row is None else _tracking_work_status_from_row(row)
+
+    def _set_tracking_completion(
+        self,
+        tracking_no: str,
+        completed_at: str | None,
+        start_date: date | None = None,
+    ) -> TrackingWorkStatus:
+        normalized = normalize_tracking_no(tracking_no)
+        if not normalized:
+            raise ValueError("Tracking No.는 필수입니다.")
+        now = _utc_now()
+        with self._connect() as conn:
+            existing = conn.execute(
+                """SELECT * FROM tracking_work_status
+                   WHERE normalized_tracking_no = ?""",
+                (normalized,),
+            ).fetchone()
+            display = (
+                str(existing["tracking_no"])
+                if existing is not None
+                else tracking_no.strip()
+            )
+            effective_start_date = (
+                start_date.isoformat()
+                if start_date is not None
+                else (existing["start_date"] if existing is not None else None)
+            )
+            conn.execute(
+                """
+                INSERT INTO tracking_work_status(
+                    normalized_tracking_no, tracking_no, start_date,
+                    completed_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(normalized_tracking_no) DO UPDATE SET
+                    start_date = COALESCE(
+                        excluded.start_date, tracking_work_status.start_date
+                    ),
+                    completed_at = excluded.completed_at,
+                    updated_at = excluded.updated_at
+                """,
+                (normalized, display, effective_start_date, completed_at, now, now),
+            )
+            row = conn.execute(
+                """SELECT * FROM tracking_work_status
+                   WHERE normalized_tracking_no = ?""",
+                (normalized,),
+            ).fetchone()
+            assert row is not None
+            _insert_action_log(
+                conn,
+                "TRACKING_COMPLETED" if completed_at else "TRACKING_RESUMED",
+                normalized,
+                json.dumps(_json_safe(_tracking_work_status_from_row(existing)), ensure_ascii=False)
+                if existing is not None else None,
+                json.dumps(_json_safe(_tracking_work_status_from_row(row)), ensure_ascii=False),
+            )
+        return _tracking_work_status_from_row(row)
 
     def delete_work_order_mapping(self, mapping_id: int) -> None:
         with self._connect() as conn:
@@ -1703,6 +1844,21 @@ def _cumulative_baseline_from_row(row: sqlite3.Row) -> CumulativeBaseline:
             str(row["effective_through_date"])
         ),
         cumulative_man_day=Decimal(str(row["cumulative_man_day"])),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+def _tracking_work_status_from_row(row: sqlite3.Row) -> TrackingWorkStatus:
+    return TrackingWorkStatus(
+        normalized_tracking_no=str(row["normalized_tracking_no"]),
+        tracking_no=str(row["tracking_no"]),
+        start_date=_date_from_db(row["start_date"]),
+        completed_at=(
+            str(row["completed_at"])
+            if row["completed_at"] is not None
+            else None
+        ),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )

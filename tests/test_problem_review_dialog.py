@@ -13,6 +13,43 @@ def _app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
+def test_mismatch_choice_buttons_copy_mail_or_calculated_values():
+    _app()
+    dialog = ProblemReviewDialog(
+        reported_daily=Decimal("2.0"),
+        calculated_daily=Decimal("3.0"),
+        reported_cumulative=Decimal("10.0"),
+        calculated_cumulative=Decimal("11.0"),
+    )
+
+    dialog.mail_value_button.click()
+    assert dialog.confirmed_daily_edit.text() == "2.0"
+    assert dialog.confirmed_cumulative_edit.text() == "10.0"
+    dialog.calculated_value_button.click()
+    assert dialog.confirmed_daily_edit.text() == "3.0"
+    assert dialog.confirmed_cumulative_edit.text() == "11.0"
+    dialog.close()
+
+
+def test_direct_input_button_preserves_values_for_manual_editing():
+    _app()
+    dialog = ProblemReviewDialog(
+        reported_daily=Decimal("2.0"),
+        calculated_daily=Decimal("3.0"),
+        reported_cumulative=Decimal("10.0"),
+        calculated_cumulative=Decimal("11.0"),
+        confirmed_daily=Decimal("4.0"),
+        confirmed_cumulative=Decimal("12.0"),
+    )
+
+    dialog.direct_input_button.click()
+
+    assert dialog.confirmed_daily_edit.text() == "4.0"
+    assert dialog.confirmed_cumulative_edit.text() == "12.0"
+    assert "직접 입력" in dialog.choice_label.text()
+    dialog.close()
+
+
 def test_mismatch_review_shows_values_and_requires_choice_and_note():
     _app()
     dialog = ProblemReviewDialog(

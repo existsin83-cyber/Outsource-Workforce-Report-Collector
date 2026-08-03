@@ -153,9 +153,13 @@ class MainWindow(QMainWindow):
         self.recovery_button = QPushButton("삭제 항목 복구")
         self.recovery_button.clicked.connect(self._open_deleted_rows)
         self.dashboard_button = QPushButton("수주 공수 대시보드")
+        self.dashboard_button.setStyleSheet(
+            "QPushButton {background:#1565c0;color:white;font-weight:700;"
+            "padding:7px 14px;border-radius:4px;}"
+            "QPushButton:hover {background:#0d47a1;}"
+            "QPushButton:pressed {background:#08306b;}"
+        )
         self.dashboard_button.clicked.connect(self._open_tracking_dashboard)
-        self.preview_button = QPushButton("최종 표 미리보기")
-        self.preview_button.clicked.connect(self._open_final_preview)
         self.excel_button = QPushButton("Excel 반영")
         self.excel_button.clicked.connect(self._show_excel_notice)
         layout.addWidget(self.manual_button)
@@ -163,7 +167,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.recovery_button)
         layout.addWidget(self.dashboard_button)
         layout.addStretch()
-        layout.addWidget(self.preview_button)
         layout.addWidget(self.excel_button)
         return bar
 
@@ -455,33 +458,28 @@ class MainWindow(QMainWindow):
         self._reload_rows()
 
     def _open_tracking_dashboard(self) -> None:
+        preview = self._services.final_report_service.preview()
         dialog = TrackingDashboardDialog(
             self._services.tracking_dashboard_service,
             self._services.work_report_service,
             self._reload_rows,
             self,
+            final_preview=preview,
+            preview_supplier=self._services.final_report_service.preview,
         )
-        dialog.exec()
-
-    def _open_final_preview(self) -> None:
-        date_from, date_to = self._selected_work_range()
-        preview = self._services.final_report_service.preview(
-            date_from, date_to
-        )
-        dialog = FinalReportDialog(preview, self)
-        dialog.confirm_requested.connect(
-            lambda: self._confirm_final(dialog, date_from, date_to)
-        )
-        dialog.copy_requested.connect(lambda: self._copy_final(dialog))
-        dialog.exec()
-
-    def _confirm_final(
-        self, dialog: FinalReportDialog, date_from: date, date_to: date
-    ) -> None:
-        try:
-            snapshot = self._services.final_report_service.confirm(
-                date_from, date_to
+        final_preview_view = getattr(dialog, "final_preview_view", None)
+        if final_preview_view is not None:
+            final_preview_view.confirm_requested.connect(
+                lambda: self._confirm_final(final_preview_view)
             )
+            final_preview_view.copy_requested.connect(
+                lambda: self._copy_final(final_preview_view)
+            )
+        dialog.exec()
+
+    def _confirm_final(self, dialog: FinalReportDialog) -> None:
+        try:
+            snapshot = self._services.final_report_service.confirm()
         except ValueError as exc:
             QMessageBox.warning(self, "최종 확정 실패", str(exc))
             dialog.invalidate_confirmation()

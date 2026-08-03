@@ -158,6 +158,8 @@ class TrackingDashboardSummary:
     initial_cumulative_man_day: Decimal | None
     source_row_ids: tuple[int, ...]
     blockers: tuple[FinalizationBlocker, ...]
+    start_date: date | None = None
+    completed_at: str | None = None
 
     @property
     def can_confirm(self) -> bool:
@@ -183,14 +185,14 @@ class FinalReportRow:
 
 @dataclass(frozen=True)
 class FinalReportPreview:
-    date_from: date
-    date_to: date
+    date_from: date | None
+    date_to: date | None
     rows: tuple[TrackingDailyAggregate, ...]
     blockers: tuple[FinalizationBlocker, ...]
 
     @property
     def can_confirm(self) -> bool:
-        return not self.blockers
+        return bool(self.rows) and not self.blockers
 
 
 @dataclass(frozen=True)

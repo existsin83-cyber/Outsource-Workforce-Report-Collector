@@ -16,8 +16,41 @@ from outsource_mail_collector.domain.work_report import RowSource
 from outsource_mail_collector.ui.final_report_dialog import FinalReportDialog
 
 
+def test_preview_blocker_notice_is_compact_and_row_tooltip_keeps_details():
+    _app()
+    preview = FinalReportPreview(
+        date_from=date(2026, 7, 29),
+        date_to=date(2026, 7, 29),
+        rows=(_work_row(7),),
+        blockers=(FinalizationBlocker(7, "ONE", "원인과 조치"),),
+    )
+    dialog = FinalReportDialog(preview)
+
+    assert dialog.blocker_label.text() == "확정 전 확인 필요: 1건"
+    assert "원인과 조치" in dialog.preview_table.item(0, 0).toolTip()
+
+
 def _app() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def test_blocker_details_are_visible_below_preview_table():
+    _app()
+    preview = FinalReportPreview(
+        date_from=date(2026, 7, 29),
+        date_to=date(2026, 7, 29),
+        rows=(_work_row(7),),
+        blockers=(FinalizationBlocker(7, "ONE", "원인 설명 / 조치 설명"),),
+    )
+
+    dialog = FinalReportDialog(preview)
+
+    details = dialog.blocker_details_label.text()
+    assert "작업일" in details
+    assert "업체" in details
+    assert "Tracking No." in details
+    assert "원인 설명" in details
+    assert "조치" in details
 
 
 def test_blockers_disable_confirmation_and_identify_affected_row():
@@ -34,7 +67,7 @@ def test_blockers_disable_confirmation_and_identify_affected_row():
     dialog = FinalReportDialog(preview)
 
     assert dialog.confirm_button.isEnabled() is False
-    assert "7" in dialog.blocker_label.text()
+    assert dialog.blocker_label.text() == "확정 전 확인 필요: 1건"
     assert dialog.copy_button.isEnabled() is False
 
 
@@ -138,13 +171,7 @@ def test_blockers_are_grouped_once_per_row_with_row_context():
     dialog = FinalReportDialog(preview)
     text = dialog.blocker_label.text()
 
-    assert text.startswith("최종 확정할 수 없습니다.")
-    assert text.count("행 7") == 1
-    assert "2026-07-29" in text
-    assert "업체A" in text
-    assert "AB260101" in text
-    assert "• 첫 번째 문제" in text
-    assert "• 두 번째 문제" in text
+    assert text == "확정 전 확인 필요: 2건"
 
 
 def test_copy_enables_only_after_confirmed_snapshot_and_can_be_invalidated():

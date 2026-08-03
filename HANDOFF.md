@@ -56,6 +56,78 @@
 
 ## 세션 기록
 
+## 2026-08-03 12:10:08 KST — 최종 표를 수주 공수 대시보드 활성 집계에 동기화
+
+### 1. 세션 목표
+
+- 최종 표 미리보기와 최종 확정이 메인 화면의 작업일 시작·종료가 아니라 기본 수주 공수 대시보드의 활성 집계 행을 사용하도록 정정한다.
+
+### 2. 시작 시점 상태
+
+- `master` 기준 작업 폴더에는 완료/재개와 대시보드 통합 관련 미커밋 변경이 이미 존재했다. 사용자 승인 아래 그 변경을 보존하고 현재 작업 폴더에서 범위를 한정해 작업했다.
+- 격리 worktree는 기준 커밋에 완료 상태 기능이 없어 검증 조건을 충족할 수 없었으므로, 사용자 승인 후 현재 작업 폴더로 전환했다.
+
+### 3. 핵심 결정
+
+- 작업일 시작·종료는 메일 수집 및 원본 행 검토 범위에만 사용한다.
+- 최종 표 미리보기·확정은 포함되고 삭제되지 않았으며 완료 처리되지 않은 Tracking No. 일자 집계 전체를 사용한다.
+- 완료 목록에서 재개, 기본 대시보드에서 완료/재개·시작일·초기 누적 변경을 하면 내장 최종 미리보기를 즉시 다시 계산한다.
+
+### 4. 수행 내용
+
+- `TrackingDashboardService.active_daily_aggregates()`로 기본 대시보드와 같은 활성 일자 집계를 제공하고, `FinalReportService.preview()`·`confirm()`이 날짜 인자 없이 이를 사용하도록 변경했다.
+- 최종 스냅샷의 날짜 범위는 표시 행의 최소·최대 작업일에서 도출하며, 활성 행이 없으면 확정을 차단한다.
+- 메인 창의 대시보드 진입·확정 경로에서 작업일 선택값 전달을 제거했다.
+- 대시보드 상태 변경 뒤 `FinalReportDialog.refresh_preview()`로 표·차단 안내·확정 상태를 갱신하고 기존 확정/복사 상태를 무효화했다.
+- 완료 목록에서 재개한 뒤에도 부모 대시보드와 내장 최종 미리보기를 새로 고치도록 보완했다.
+
+### 5. 변경 파일
+
+- `src/outsource_mail_collector/application/models.py`
+- `src/outsource_mail_collector/application/tracking_dashboard_service.py`
+- `src/outsource_mail_collector/application/final_report_service.py`
+- `src/outsource_mail_collector/ui/main_window.py`
+- `src/outsource_mail_collector/ui/final_report_dialog.py`
+- `src/outsource_mail_collector/ui/tracking_dashboard_dialog.py`
+- `tests/test_final_report_service.py`
+- `tests/test_tracking_dashboard_service.py`
+- `tests/test_main_window.py`
+- `tests/test_tracking_dashboard_dialog.py`
+
+### 6. 검증 결과
+
+- `$env:PYTHONPATH='src'; $env:QT_QPA_PLATFORM='offscreen'; .\.venv\Scripts\python.exe -m pytest tests\test_final_report_service.py tests\test_tracking_dashboard_service.py tests\test_final_report_dialog.py tests\test_tracking_dashboard_dialog.py tests\test_main_window.py -q --basetemp .pytest-basetemp-final-preview-dashboard-final2 -p no:cacheprovider` → `75 passed in 31.55s`.
+- `.\.venv\Scripts\python.exe -m compileall -q src tests` → 성공.
+- `git diff --check` → 오류 없음. LF/CRLF 변환 예정 경고만 출력됨.
+- 새 회귀 테스트의 RED/GREEN과 독립 코드 검토를 수행했다. 검토에서 발견된 내장 미리보기 갱신 누락과 완료 목록 재개 후 부모 갱신 누락을 각각 보완했다.
+
+### 7. 실패 및 미확인 사항
+
+- 실제 Outlook COM, Excel COM, 라이브 DB, 사용자 데스크톱 GUI는 실행하지 않았다.
+- 전체 pytest는 이번 세션에서 실행하지 않았다. 관련 서비스·Qt UI 경로 75건만 실행했다.
+
+### 8. 현재 상태
+
+- 최종 표는 기본 수주 공수 대시보드와 같은 활성 집계를 표시·확정하도록 코드와 회귀 테스트에서 확인했다.
+
+### 9. 다음 세션 실행 순서
+
+1. 복사 DB에서 기본 대시보드의 완료·재개·초기 누적 변경 후 최종 미리보기 행과 확정 결과가 일치하는지 수동 GUI로 확인한다.
+2. 필요하면 전체 pytest를 별도 전용 임시 경로로 실행한다.
+
+### 10. 위험 및 주의사항
+
+- 자동화 검증은 PySide6 offscreen 경로에 한정된다. 실제 Windows 화면 렌더링과 Outlook·Excel 연동 성공을 의미하지 않는다.
+
+### 11. Git 및 변경 경계
+
+- 커밋·푸시·브랜치 병합은 수행하지 않았다.
+- 세션 시작 전 존재한 미커밋 변경과 미추적 파일은 보존했다.
+
+### 12. 이전 기록 정정
+
+- 없음.
+
 ## 2026-07-31 10:42:28 KST — GitHub 원격 등록 및 master 푸시
 
 ### 세션 정보
@@ -2108,3 +2180,106 @@
 - FORMAT_B의 주간/야간을 공수 계산에 연결하는 변환 정책과 confidence evidence 조합별 점수표는 업무 규칙 합의 전까지 확정하지 않는다.
 - `split_confidence`를 저장·검토 상태에 연결할지, Outlook COM 아파트먼트 경계와 GUI 전체 스캔을 어떻게 비동기화할지는 별도 설계 작업이다.
 - 커밋·푸시·브랜치 변경은 하지 않았다.
+## 2026-08-03 Tracking No. 완료 목록 및 남은 UI 구현
+
+### 변경
+
+- `tracking_work_status` 테이블과 additive schema/index를 추가해 Tracking No.별 작업 시작일, 완료 시각, 재개 상태를 저장하고 action log에 기록한다.
+- `TrackingDashboardService`가 기본 대시보드에서 완료 장비를 제외하고, 완료 목록용 summary와 시작일 저장·완료·재개 API를 제공한다. 시작일이 없으면 최초 작업일을 기본값으로 사용한다.
+- `TrackingDashboardDialog`에 시작일 달력/저장, 완료 전 안내·경고·재확인, 완료 장비 목록과 재개 버튼을 추가했다.
+- `FinalReportDialog`의 상단 오류 안내를 건수로 축약하고 상세 원인은 행 셀 툴팁에 유지했다.
+- `ProblemReviewDialog`에 메일값 채택/계산값 채택 빠른 선택 버튼을 추가했다.
+
+### 검증
+
+- RED: 신규 저장/서비스 2개와 UI 2개 테스트가 누락 API/컨트롤로 실패함을 확인했다.
+- GREEN: 관련 회귀 55개 통과; 메인 창/스모크 20개 통과.
+- `.venv\Scripts\python.exe -m compileall -q src tests`: 통과.
+- `git diff --check`: 통과.
+- 전체 pytest: 267개 테스트 본문은 통과했으나 Qt 종료 시 프로세스가 `-1073740791`로 종료되어 전체 실행은 정상 종료로 확정하지 않는다. 관련 UI 파일별/조합별 실행에서도 일부 조합에서 같은 종료 코드가 재현되며, 테스트 본문 실패는 없다.
+- 실제 Outlook, Excel, live DB 및 사용자 데스크톱 GUI 검증은 실행하지 않았다.
+
+### 미완료/경계
+
+- 기존 미추적 `.claude/`, `.superpowers/`, `AGENTS.md`, `CLAUDE.md`와 pytest 임시 디렉터리는 건드리지 않았다.
+- 커밋, 푸시, 브랜치 변경은 하지 않았다.
+
+## 2026-08-03 수주 공수 대시보드 내 최종 표 통합 후속 기록
+
+### 변경
+
+- 메인 창의 별도 `최종 표 미리보기` 버튼을 제거했다.
+- 파란색 배경(`#1565c0`)의 `수주 공수 대시보드` 버튼으로 진입을 통합했다.
+- 수주 공수 대시보드 안에 `최종 표 미리보기` 탭을 추가해 최종 표, 최종 확정, 표 복사 기능을 대시보드 흐름에서 유지했다.
+
+### 검증 및 경계
+
+- 관련 UI 테스트 `31 passed`; 전체 pytest 본문 `271 passed`.
+- 전체 pytest는 Qt 종료 코드 `-1073740791`이 재현돼 프로세스 정상 종료로 확정하지 않는다.
+- `compileall`, `git diff --check` 통과. 실제 Outlook/Excel/live DB/사용자 GUI 검증은 미실행.
+- 커밋, 푸시, 브랜치 변경은 하지 않았다.
+
+## 2026-08-03 수주 공수 대시보드 내 최종 표 통합
+
+### 변경
+
+- 메인 창의 별도 `최종 표 미리보기` 버튼을 제거하고, `수주 공수 대시보드` 버튼이 현재 선택한 작업일 범위의 최종 표를 함께 준비하도록 변경했다.
+- 수주 공수 대시보드에 `수주 공수 대시보드`와 `최종 표 미리보기` 탭을 두어, 최종 표가 별도 흐름이 아닌 대시보드 화면 안에서 표시된다.
+- 기존 최종 확정과 표 복사 신호는 대시보드 안의 최종 표 탭에서도 기존 서비스 경로로 연결해 유지했다.
+- 대시보드 진입 버튼은 파란색 배경(`#1565c0`)과 흰 글자, hover/pressed 상태로 강조했다.
+
+### 검증
+
+- 메인 창/대시보드/최종 표 UI 회귀: `31 passed`.
+- 전체 pytest 본문: `271 passed in 116.00s`; 다만 종료 시 Qt 프로세스 코드 `-1073740791`이 재현되어 정상 종료로 확정하지 않는다.
+- `.venv\\Scripts\\python.exe -m compileall -q src tests`: 통과.
+- 실제 Outlook COM, Excel COM, live DB 및 사용자 데스크톱 GUI 검증은 실행하지 않았다.
+
+### 경계
+
+- 커밋, 푸시, 브랜치 변경은 하지 않았다.
+
+## 2026-08-03 전체 반영 누락 및 오늘 변경 문제 정정
+
+### 변경 및 결정
+
+- 문제 검토에 `메일값 채택`, `계산값 채택`, `직접 입력` 세 선택지를 제공했다. 직접 입력은 기존 확정값을 보존하고 사용자가 확정 투입/누적 공수를 수정하도록 안내한다.
+- 최종 미리보기의 차단 상세를 툴팁뿐 아니라 표 아래에 작업일, 업체, Tracking No., 원인, 조치로 항상 표시했다. 기존 9열 출력 계약은 유지했다.
+- Tracking No. 완료/재개는 실제 집계 행이 있을 때만 허용하며, 존재하지 않는 식별자에 상태 행을 만들지 않는다. 완료 시 최초 작업일을 기본 시작일로 사용하고 상태 변경과 완료 action log를 한 트랜잭션에서 처리한다.
+- 이번 기록은 이전 변경에서 직접 입력 선택지가 누락되고, 오류 상세가 툴팁 중심이었으며, 완료 API의 존재 검증이 부족했던 점을 정정한다.
+
+### 변경 파일 및 보존 범위
+
+- `src/outsource_mail_collector/ui/problem_review_dialog.py`
+- `src/outsource_mail_collector/ui/final_report_dialog.py`
+- `src/outsource_mail_collector/application/tracking_dashboard_service.py`
+- `src/outsource_mail_collector/infrastructure/db/repository.py`
+- 관련 UI/서비스/저장소 회귀 테스트
+- 기존 사용자 미추적 `.claude/`, `.superpowers/`, `AGENTS.md`, `CLAUDE.md` 및 pytest 임시 디렉터리는 보존했다.
+
+### 검증
+
+- 집중 UI/서비스 실행: `53 passed` (Qt 조합에 따른 프로세스 종료 코드 문제로 해당 실행의 정상 종료는 확정하지 않음).
+- Tracking 대시보드/메인 윈도우 클릭 회귀: `23 passed`.
+- 전체 pytest: `271 passed in 99.75s`, 정상 종료 확인.
+- `compileall`: 통과. `git diff --check`: 통과.
+
+### 미실행 및 경계
+
+- 실제 Outlook COM, Excel COM, live DB, 사용자 데스크톱 GUI 검증은 실행하지 않았다.
+- 커밋, 푸시, 브랜치 변경은 하지 않았다.
+
+## 2026-08-03 수주 공수 대시보드 내 최종 표 통합 최신 기록
+
+### 변경
+
+- 메인 창의 별도 `최종 표 미리보기` 버튼을 제거했다.
+- 파란색 배경(`#1565c0`)의 `수주 공수 대시보드` 버튼으로 진입을 통합했다.
+- 수주 공수 대시보드 안에 `최종 표 미리보기` 탭을 추가해 최종 표, 최종 확정, 표 복사 기능을 대시보드 흐름에서 유지했다.
+
+### 검증 및 경계
+
+- 관련 UI 테스트 `31 passed`; 전체 pytest 본문 `271 passed`.
+- 전체 pytest는 Qt 종료 코드 `-1073740791`이 재현돼 프로세스 정상 종료로 확정하지 않는다.
+- `compileall`, `git diff --check` 통과. 실제 Outlook/Excel/live DB/사용자 GUI 검증은 미실행.
+- 커밋, 푸시, 브랜치 변경은 하지 않았다.

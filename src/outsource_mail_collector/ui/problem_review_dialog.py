@@ -9,8 +9,10 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QWidget,
 )
 
@@ -77,6 +79,18 @@ class ProblemReviewDialog(QDialog):
         self.confirmed_cumulative_edit = QLineEdit(
             _display(confirmed_cumulative)
         )
+        self.mail_value_button = QPushButton("메일값 채택")
+        self.calculated_value_button = QPushButton("계산값 채택")
+        self.direct_input_button = QPushButton("직접 입력")
+        self.choice_label = QLabel()
+        self.choice_label.setStyleSheet("color:#555;")
+        self.mail_value_button.clicked.connect(
+            lambda: self._choose_values(reported_daily, reported_cumulative)
+        )
+        self.calculated_value_button.clicked.connect(
+            lambda: self._choose_values(calculated_daily, calculated_cumulative)
+        )
+        self.direct_input_button.clicked.connect(self._choose_direct_input)
         self.actual_headcount_edit = QLineEdit(_display_int(actual_headcount))
         self.night_headcount_edit = QLineEdit(_display_int(night_headcount))
         self.duplicate_decision = QComboBox()
@@ -116,6 +130,12 @@ class ProblemReviewDialog(QDialog):
                 ("확정 누적", self.confirmed_cumulative_edit),
             ):
                 layout.addRow(label, widget)
+            choice_layout = QHBoxLayout()
+            choice_layout.addWidget(self.mail_value_button)
+            choice_layout.addWidget(self.calculated_value_button)
+            choice_layout.addWidget(self.direct_input_button)
+            layout.addRow("불일치 빠른 선택", choice_layout)
+            layout.addRow(self.choice_label)
         self.note_edit.setToolTip(
             "어떤 원문과 계산 근거로 확정했는지 기록합니다."
         )
@@ -184,6 +204,23 @@ class ProblemReviewDialog(QDialog):
             return
         self.error_label.clear()
         self.accept()
+
+    def _choose_values(
+        self,
+        daily: Decimal | None,
+        cumulative: Decimal | None,
+    ) -> None:
+        if daily is not None:
+            self.confirmed_daily_edit.setText(_display(daily))
+        if cumulative is not None:
+            self.confirmed_cumulative_edit.setText(_display(cumulative))
+        self.choice_label.setText("메일값 또는 계산값을 선택했습니다.")
+
+    def _choose_direct_input(self) -> None:
+        self.choice_label.setText(
+            "직접 입력을 선택했습니다. 확정 공수와 누적 공수를 직접 수정하세요."
+        )
+        self.confirmed_daily_edit.setFocus()
 
 
 def _display(value: Decimal | None) -> str:

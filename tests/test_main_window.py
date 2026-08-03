@@ -5,7 +5,7 @@ from dataclasses import replace
 from decimal import Decimal
 from types import SimpleNamespace
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QToolButton
 import pywintypes
 
@@ -222,31 +222,34 @@ def test_night_issue_review_updates_headcounts_before_confirmation(
     ]
 
 
-def test_preview_button_invokes_final_report_service(monkeypatch):
+def test_blue_dashboard_button_opens_dashboard_with_final_preview(monkeypatch):
     _app()
     services = _services()
     window = MainWindow(services)
+    window.work_date_from_edit.setDate(QDate(2026, 8, 2))
+    window.work_date_to_edit.setDate(QDate(2026, 8, 2))
 
-    class _Signal:
-        def connect(self, callback):
-            self.callback = callback
+    captured: dict[str, object] = {}
 
-    class FakeFinalDialog:
-        def __init__(self, preview, parent=None):
-            self.preview = preview
-            self.confirm_requested = _Signal()
-            self.copy_requested = _Signal()
+    class FakeDashboardDialog:
+        def __init__(self, *args, final_preview=None, **kwargs):
+            captured["final_preview"] = final_preview
+            self.final_preview_view = None
 
         def exec(self):
-            return 0
+            captured["executed"] = True
 
     monkeypatch.setattr(
-        main_window_module, "FinalReportDialog", FakeFinalDialog
+        main_window_module, "TrackingDashboardDialog", FakeDashboardDialog
     )
 
-    window.preview_button.click()
+    window.dashboard_button.click()
 
-    assert len(services.final_report_service.preview_calls) == 1
+    assert services.final_report_service.preview_calls == [()]
+    assert captured["final_preview"] is not None
+    assert captured["executed"] is True
+    assert "#1565c0" in window.dashboard_button.styleSheet()
+    assert not hasattr(window, "preview_button")
 
 
 def test_accepting_settings_refreshes_work_order_mappings(monkeypatch):
@@ -534,11 +537,16 @@ def test_dashboard_button_receives_application_services_and_refresh(monkeypatch)
             work_report_service,
             refresh_callback,
             parent=None,
+            *,
+            final_preview=None,
+            preview_supplier=None,
         ):
             captured.update(
                 dashboard_service=dashboard_service,
                 work_report_service=work_report_service,
                 refresh_callback=refresh_callback,
+                final_preview=final_preview,
+                preview_supplier=preview_supplier,
             )
 
         def exec(self):
@@ -552,6 +560,9 @@ def test_dashboard_button_receives_application_services_and_refresh(monkeypatch)
 
     assert captured["dashboard_service"] is services.tracking_dashboard_service
     assert captured["work_report_service"] is services.work_report_service
+    assert captured["preview_supplier"] is not None
+    captured["preview_supplier"]()
+    assert services.final_report_service.preview_calls == [(), ()]
     assert captured["executed"] is True
 
 
@@ -661,11 +672,16 @@ class _WorkReportService:
 
 class _FinalReportService:
     def __init__(self) -> None:
-        self.preview_calls: list[tuple[date, date]] = []
+        self.preview_calls: list[tuple[()]] = []
+        self.confirm_calls: list[tuple[()]] = []
 
-    def preview(self, date_from, date_to):
-        self.preview_calls.append((date_from, date_to))
-        return FinalReportPreview(date_from, date_to, tuple(), tuple())
+    def preview(self):
+        self.preview_calls.append(())
+        return FinalReportPreview(None, None, tuple(), tuple())
+
+    def confirm(self):
+        self.confirm_calls.append(())
+        raise ValueError("활성 행 없음")
 
 
 def _services():

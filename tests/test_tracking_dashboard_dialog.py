@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication, QDialog
 import outsource_mail_collector.ui.tracking_dashboard_dialog as dialog_module
 from outsource_mail_collector.application.models import (
     FinalizationBlocker,
+    FinalReportPreview,
     TrackingDashboardSummary,
     WorkReportRow,
 )
@@ -21,6 +22,7 @@ from outsource_mail_collector.domain.work_report import (
 )
 from outsource_mail_collector.ui.tracking_dashboard_dialog import (
     BaselineDialog,
+    CompletedTrackingDialog,
     TrackingDashboardDialog,
 )
 
@@ -195,11 +197,188 @@ def test_baseline_values_require_reason_and_one_decimal():
         raise AssertionError("missing reason should be rejected")
 
 
+def test_dashboard_start_date_save_and_completion_flow(monkeypatch):
+    _app()
+    dashboard_service = _DashboardService(
+        summaries=(_summary(),), details=(_row(7),)
+    )
+    dialog = TrackingDashboardDialog(
+        dashboard_service, _WorkReportService(), lambda: None
+    )
+    assert dialog.start_date_edit.date() == QDate(2026, 7, 29)
+    dialog.summary_table.selectRow(0)
+    dialog.start_date_edit.setDate(QDate(2026, 7, 28))
+    dialog.save_start_date_button.click()
+    assert dashboard_service.start_dates == [
+        ("AB260101", date(2026, 7, 28))
+    ]
+
+    monkeypatch.setattr(
+        dialog_module.QMessageBox,
+        "information",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        dialog_module.QMessageBox,
+        "question",
+        lambda *_args: dialog_module.QMessageBox.StandardButton.Yes,
+    )
+    dialog.complete_button.click()
+    assert dashboard_service.completed == ["AB260101"]
+    dialog.close()
+
+
+def test_completion_refreshes_embedded_final_preview(monkeypatch):
+    _app()
+    dashboard_service = _DashboardService(
+        summaries=(_summary(),), details=(_row(7),)
+    )
+    initial_preview = FinalReportPreview(
+        date_from=date(2026, 7, 29),
+        date_to=date(2026, 7, 29),
+        rows=(_row(7),),
+        blockers=(),
+    )
+    refreshed_preview = FinalReportPreview(
+        date_from=None,
+        date_to=None,
+        rows=(),
+        blockers=(FinalizationBlocker(7, "COMPLETED", "완료 항목 제외"),),
+    )
+    preview_calls: list[str] = []
+
+    def preview_supplier() -> FinalReportPreview:
+        preview_calls.append("refreshed")
+        return refreshed_preview
+
+    dialog = TrackingDashboardDialog(
+        dashboard_service,
+        _WorkReportService(),
+        lambda: None,
+        final_preview=initial_preview,
+        preview_supplier=preview_supplier,
+    )
+    assert dialog.final_preview_view.preview_table.rowCount() == 1
+    assert dialog.final_preview_view.confirm_button.isEnabled() is True
+    monkeypatch.setattr(dialog_module.QMessageBox, "information", lambda *_: None)
+    monkeypatch.setattr(
+        dialog_module.QMessageBox,
+        "question",
+        lambda *_: dialog_module.QMessageBox.StandardButton.Yes,
+    )
+
+    dialog.complete_button.click()
+
+    assert dashboard_service.completed == ["AB260101"]
+    assert preview_calls == ["refreshed"]
+    assert dialog.final_preview_view.preview_table.rowCount() == 0
+    assert dialog.final_preview_view.confirm_button.isEnabled() is False
+    dialog.close()
+
+
+def test_completed_dialog_uses_same_summary_table_and_resumes_selected_row(
+    monkeypatch,
+):
+    _app()
+    service = _DashboardService(
+        summaries=(_summary(completed_at="2026-08-01T00:00:00+00:00"),),
+        details=(_row(7),),
+    )
+    dialog = CompletedTrackingDialog(
+        service, _WorkReportService(), lambda: None
+    )
+
+    assert dialog.windowTitle() == "완료 장비 목록"
+    assert dialog.summary_table.columnCount() == len(dialog_module._SUMMARY_HEADERS)
+    monkeypatch.setattr(
+        dialog_module.QMessageBox,
+        "question",
+        lambda *_args: dialog_module.QMessageBox.StandardButton.Yes,
+    )
+    dialog.summary_table.selectRow(0)
+    dialog.resume_button.click()
+    assert service.resumed == ["AB260101"]
+    dialog.close()
+
+
+def test_resuming_from_completed_child_refreshes_parent_preview(monkeypatch):
+    _app()
+
+    class StatefulDashboardService:
+        def __init__(self) -> None:
+            self.resumed = False
+
+        def summaries(self):
+            return (_summary(),) if self.resumed else ()
+
+        def completed_summaries(self):
+            return () if self.resumed else (_summary(),)
+
+        def drill_down(self, _tracking_no):
+            return (_row(7),)
+
+        def resume(self, _tracking_no):
+            self.resumed = True
+
+    service = StatefulDashboardService()
+    initial_preview = FinalReportPreview(
+        date_from=None,
+        date_to=None,
+        rows=(),
+        blockers=(FinalizationBlocker(7, "COMPLETED", "완료 항목 제외"),),
+    )
+    resumed_preview = FinalReportPreview(
+        date_from=date(2026, 7, 29),
+        date_to=date(2026, 7, 29),
+        rows=(_row(7),),
+        blockers=(),
+    )
+    preview_calls: list[str] = []
+
+    def preview_supplier() -> FinalReportPreview:
+        preview_calls.append("resumed")
+        return resumed_preview
+
+    parent = TrackingDashboardDialog(
+        service,
+        _WorkReportService(),
+        lambda: None,
+        final_preview=initial_preview,
+        preview_supplier=preview_supplier,
+    )
+
+    class AutoResumeCompletedDialog(CompletedTrackingDialog):
+        def exec(self):
+            self.resume_button.click()
+            return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(
+        dialog_module, "CompletedTrackingDialog", AutoResumeCompletedDialog
+    )
+    monkeypatch.setattr(
+        dialog_module.QMessageBox,
+        "question",
+        lambda *_: dialog_module.QMessageBox.StandardButton.Yes,
+    )
+
+    parent._open_completed_list()
+
+    assert service.resumed is True
+    assert parent.summary_table.rowCount() == 1
+    assert preview_calls == ["resumed"]
+    assert parent.final_preview_view.preview_table.rowCount() == 1
+    assert parent.final_preview_view.confirm_button.isEnabled() is True
+    parent.close()
+
+
 class _DashboardService:
     def __init__(self, *, summaries, details):
         self._summaries = summaries
         self._details = details
         self.drill_down_calls: list[str] = []
+        self.start_dates: list[tuple[str, date]] = []
+        self.completed: list[str] = []
+        self.resumed: list[str] = []
 
     def summaries(self):
         return self._summaries
@@ -207,6 +386,18 @@ class _DashboardService:
     def drill_down(self, tracking_no):
         self.drill_down_calls.append(tracking_no)
         return self._details
+
+    def set_start_date(self, tracking_no, start_date):
+        self.start_dates.append((tracking_no, start_date))
+
+    def complete(self, tracking_no):
+        self.completed.append(tracking_no)
+
+    def resume(self, tracking_no):
+        self.resumed.append(tracking_no)
+
+    def completed_summaries(self):
+        return self._summaries
 
 
 class _WorkReportService:
@@ -224,6 +415,7 @@ class _WorkReportService:
 def _summary(
     *,
     blockers: tuple[FinalizationBlocker, ...] = (),
+    completed_at: str | None = None,
 ) -> TrackingDashboardSummary:
     return TrackingDashboardSummary(
         normalized_tracking_no="AB260101",
@@ -242,6 +434,8 @@ def _summary(
         initial_cumulative_man_day=Decimal("20.0"),
         source_row_ids=(7, 8),
         blockers=blockers,
+        start_date=date(2026, 7, 29),
+        completed_at=completed_at,
     )
 
 

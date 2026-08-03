@@ -43,6 +43,15 @@ CREATE TABLE IF NOT EXISTS cumulative_baselines (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS tracking_work_status (
+    normalized_tracking_no TEXT PRIMARY KEY,
+    tracking_no TEXT NOT NULL,
+    start_date TEXT,
+    completed_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS processed_mails (
     mail_entry_id TEXT PRIMARY KEY,
     subject TEXT,
@@ -186,6 +195,9 @@ ON extracted_records(report_date);
 
 CREATE INDEX IF NOT EXISTS idx_work_report_tracking_date
 ON work_report_rows(tracking_no, work_date);
+
+CREATE INDEX IF NOT EXISTS idx_tracking_work_status_completed
+ON tracking_work_status(completed_at, normalized_tracking_no);
 
 CREATE INDEX IF NOT EXISTS idx_final_reports_invalidated
 ON final_reports(invalidated_at);
