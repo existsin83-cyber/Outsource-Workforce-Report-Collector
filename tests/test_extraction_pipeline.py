@@ -11,6 +11,7 @@ from fixtures import (
     FORMAT_B_NUMBERED_VENDOR_PER_UNIT,
     FORMAT_C_INLINE_ALL_IN_ONE_LINE,
     FORMAT_D_INLINE_REPORTED_DAILY,
+    FORMAT_E_BARE_EQUIPMENT_MAN_DAY,
     INLINE_HEADCOUNT_WITH_CUMULATIVE,
     TOTAL_AND_DAILY_MAN_DAY,
     TOTAL_INPUT_MAN_DAY,
@@ -187,6 +188,32 @@ def test_format_d_extracts_tracking_equipment_night_and_reported_daily():
     assert second.actual_headcount == 3.0
     assert second.night_headcount == 1.0
     assert second.daily_man_day == 3.5
+
+
+def test_bare_equipment_headers_extract_man_day_without_outsource_label():
+    sections = _sections_for(FORMAT_E_BARE_EQUIPMENT_MAN_DAY)
+
+    assert [section.equipment_name for section in sections] == [
+        "SI Flex UV Driller 4500U 10대",
+        "DNP UV Driller 4000U 7대",
+        "SEMV 2.0 3대",
+        "SEMV 1.5 2대",
+    ]
+    assert [section.split_confidence for section in sections] == [1.0, 1.0, 1.0, 1.0]
+
+    records = [extract_work_records(section)[0] for section in sections]
+
+    assert [record.cumulative_man_day for record in records] == [119.5, 50.5, 33.5, 29.0]
+    assert records[0].actual_headcount is None
+    assert records[0].night_headcount is None
+    assert records[1].actual_headcount == 6.0
+    assert records[1].day_headcount is None
+    assert records[1].night_headcount == 6.0
+    assert records[1].confidence == 0.55
+    assert records[2].confidence == 0.35
+    assert records[3].confidence == 0.35
+
+    assert validate(sections[0], records[0]).status == ReviewStatus.HEADCOUNT_MISSING
 
 
 @pytest.mark.parametrize("cumulative_text, expected", CUMULATIVE_MAN_DAY_VARIANTS)

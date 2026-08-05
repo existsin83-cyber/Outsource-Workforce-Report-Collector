@@ -56,6 +56,73 @@
 
 ## 세션 기록
 
+## 2026-08-05 16:43:26 KST — bare 장비 헤더 및 공수 전용 외주 보고 파싱 보강
+
+### 1. 세션 목표
+
+- 번호나 점 접두사 없이 장비명과 대수로만 쓰인 헤더를 분리하고, 외주 인원 라벨 없이 공수 또는 주/야간 인원만 있는 보고를 레코드로 추출한다.
+
+### 2. 시작 시점 상태
+
+- 기준 커밋: `e12f566` (`master`, `origin/master`보다 5개 커밋 앞섬).
+- 기존 사용자 변경: `review_grid.py`, `tracking_dashboard_dialog.py`의 테이블 `:focus` 스타일 수정과 기존 미추적 파일이 있었으며 보존했다.
+
+### 3. 핵심 결정
+
+- 단일 번호 카테고리는 bare 장비 헤더가 있는 메일에서만 무시한다. bare 헤더가 없는 기존 단일 번호 장비 보고는 계속 지원한다.
+- 공수만 있으면 인원은 추정하지 않고 `None`으로 보존해 기존 검증기의 `HEADCOUNT_MISSING` 경로를 사용한다.
+
+### 4. 수행 내용
+
+- `section_parser.py`: `공수`를 상세 필드 라벨에 추가하고, 비번호형 메일에서 점/대시/화살표로 시작하지 않으면서 대수·호기 표식이 있는 bare 줄을 장비 헤더로 인식했다.
+- `outsource_extractor.py`: 명시적 외주 인원 → 주/야간 인원 → 공수 전용 순서로 인원 근거를 선택하고, 각 신뢰도 기준선(기존, 0.45, 0.25)을 적용했다. 주/야간 수치의 선택적 `명` 접미사도 허용했다.
+- `tests/fixtures.py`, `tests/test_extraction_pipeline.py`: 익명화한 bare 장비 헤더 형식과 섹션 4개 분리·공수 추출·주야 인원·신뢰도·검토 상태 회귀를 추가했다.
+
+### 5. 변경 파일
+
+- `src/outsource_mail_collector/parsing/section_parser.py`
+- `src/outsource_mail_collector/parsing/outsource_extractor.py`
+- `tests/fixtures.py`
+- `tests/test_extraction_pipeline.py`
+- `HANDOFF.md`
+
+### 6. 검증 결과
+
+- RED: 새 bare 헤더 회귀 테스트는 변경 전 카테고리 및 공수 상세가 잘못 섹션화되어 실패했다.
+- GREEN: `tests/test_extraction_pipeline.py::test_bare_equipment_headers_extract_man_day_without_outsource_label` — `1 passed`.
+- 파서 회귀: `tests/test_extraction_pipeline.py` — `21 passed`.
+- UI 재검증: `tests/test_review_grid.py tests/test_tracking_dashboard_dialog.py` — `36 passed`.
+- 전체: `pytest -q --basetemp .pytest-bare-header-full-final-bg-20260805 -p no:cacheprovider` — `321 passed in 118.91s`.
+- `python -m compileall -q src tests` 성공, `git diff --check` 성공(LF/CRLF 안내만 출력).
+
+### 7. 실패 및 미확인 사항
+
+- 첫 전체 실행은 단일 번호 장비 헤더를 과도하게 버려 기존 날짜줄 회귀 4건이 실패했다. bare 헤더 존재 여부로 조건을 좁힌 뒤 파서 회귀 및 최종 전체 테스트가 통과했다.
+- 실제 Outlook COM, 실제 메일, Excel COM, 라이브 DB 및 수동 GUI 수집은 실행하지 않았다.
+
+### 8. 현재 상태
+
+- 코드와 자동화 검증은 완료. 실제 Outlook 화면에서 2026-08-04 수신일로 재수집해 기대 장비 행이 표시되는지 실환경 확인이 남아 있다.
+
+### 9. 다음 세션 실행 순서
+
+1. 사용자가 승인한 복사 환경에서 2026-08-04 수신일 Outlook 재수집을 실행한다.
+2. 기대 장비 행 수, 공수, 주/야간 인원과 검토 상태를 확인한다.
+
+### 10. 위험 및 주의사항
+
+- 공수만 있는 행은 의도적으로 인원을 추정하지 않아 검토 필요 상태가 된다.
+- 실제 메일 본문은 저장소에 추가하지 않았고, 회귀 fixture는 익명화된 대표 형식이다.
+
+### 11. Git 및 변경 경계
+
+- 커밋, 푸시, 브랜치 변경 없음.
+- 기존 UI `:focus` 스타일 수정 및 미추적 사용자 파일은 수정하거나 삭제하지 않았다.
+
+### 12. 이전 기록 정정
+
+- 없음.
+
 ## 2026-08-03 17:05:26 KST — Tracking No. 통합 최종표 개편
 
 ### 필수 식별 정보
@@ -139,6 +206,7 @@
 
 - 브랜치: `master`, 기준 커밋: `cf5a3a2`.
 - 커밋, 푸시, 브랜치 변경은 하지 않았다.
+
 - 기존에 미커밋 상태로 남아 있던 다른 변경(`main_window.py`, `settings_dialog.py` 등 대시보드 등록 관련 작업)은 그대로 보존했다.
 
 ### 12. 이전 기록 정정
@@ -2495,4 +2563,27 @@
 - 관련 UI 테스트 `31 passed`; 전체 pytest 본문 `271 passed`.
 - 전체 pytest는 Qt 종료 코드 `-1073740791`이 재현돼 프로세스 정상 종료로 확정하지 않는다.
 - `compileall`, `git diff --check` 통과. 실제 Outlook/Excel/live DB/사용자 GUI 검증은 미실행.
+- 커밋, 푸시, 브랜치 변경은 하지 않았다.
+
+## 2026-08-05 검토 표 일반 행 색상 보정
+
+### 변경 및 결정
+
+- 확인 완료된 경고 행이 명시적 셀 색상을 받지 않아 다크 테마의 검정 배경을 상속하던 문제를 수정했다.
+- 일반 행과 확인 완료 경고 행의 체크박스, 데이터, 포함 셀에 밝은 중립 배경(`#f5f5f5`)과 어두운 글자(`#1a1a1a`)를 명시했다.
+- 표 자체와 일반 셀 스타일에도 같은 색을 지정해 빈 영역 및 셀 위젯 주변이 다크 테마 팔레트를 상속하지 않게 했다.
+- 미확인 문제 행의 기존 경고 색상(`#fff3e0`/`#4a1f00`)과 기존 선택·포커스 스타일은 유지했다.
+
+### 검증
+
+- RED: 확인 완료 경고 행 색상 회귀 테스트가 구현 전 `#000000` 배경으로 실패했다.
+- GREEN: 새 회귀 테스트 `1 passed`.
+- 관련 UI 테스트: `.venv\Scripts\python.exe -m pytest tests\test_review_grid.py -q --basetemp .pytest-review-grid-20260805 -p no:cacheprovider` 결과 `11 passed`.
+- `.venv\Scripts\python.exe -m compileall -q src\outsource_mail_collector\ui\review_grid.py tests\test_review_grid.py` 통과.
+- `git diff --check` 통과.
+
+### 미실행 및 경계
+
+- 실제 Outlook COM, Excel COM, live DB, 사용자 데스크톱 GUI 검증은 실행하지 않았다.
+- 기존 사용자 수정과 미추적 파일은 보존했다.
 - 커밋, 푸시, 브랜치 변경은 하지 않았다.

@@ -111,6 +111,29 @@ FORMAT_D_INLINE_REPORTED_DAILY = """\
 .외주 인원 : 3 명 (야근: 1 명 투입 공수 : 3.5)
 """
 
+# Bare equipment headers with no numbered/dot prefix. This is an anonymized
+# regression shape: a single numbered category line is followed by equipment
+# names ending in a unit count, then dot-prefixed detail fields.
+FORMAT_E_BARE_EQUIPMENT_MAN_DAY = """\
+1. PCB & PKG
+SI Flex UV Driller 4500U 10대
+.수주번호 : SK260404~13
+.Frame 입고 : 6/9 (4대), 6/16 (6대)
+.출하 일정 : 8/6 (4대), 8/13 (6대)
+.공수 : [총 공수 : 119.5MD]
+.전장
+- 케이블 베어 커버 부착 미스로 인하여 재작업
+DNP UV Driller 4000U 7대
+.수주번호 : DN260404~10
+.공수 : 주간 6명, 야간 6 [총 공수 : 50.5]
+SEMV 2.0 3대
+.수주번호 : SM260404~06
+.공수 : [총 공수 : 33.5MD]
+SEMV 1.5 2대
+.수주번호 : SM260407~08
+.공수 : [총 공수 : 29.0MD]
+"""
+
 # Parser regression inputs. Keep these anonymized as Python strings because
 # local DRM tooling can interfere with standalone text fixtures.
 CUMULATIVE_MAN_DAY_VARIANTS = (

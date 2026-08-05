@@ -34,6 +34,7 @@ _FIELD_LABEL_PREFIXES = (
     "수주번호", "출하", "납기", "Frame", "외주", "우기", "미입고", "사업부",
     "Stage", "Handler", "LM", "Issue", "전장", "Turn", "Ez", "IO", "I/O",
     "Servo", "Safety", "구매", "제어도", "통합", "하네스", "프레임", "스테이지",
+    "공수",
 )
 
 
@@ -62,6 +63,10 @@ def split_sections(mail_id: str, lines: list[str]) -> list[EquipmentSection]:
     # "번호형 목록"으로 판단한다 - 1개뿐이면 카테고리 라벨로 보고 점(.) 헤더 판별로 넘어간다.
     numbered_count = sum(1 for line in lines if _numbered_header_match(line))
     uses_numbered_headers = numbered_count >= 2
+    has_bare_unit_headers = not uses_numbered_headers and any(
+        not line.startswith((".", "-", "->")) and _UNIT_MARKER.search(line)
+        for line in lines
+    )
 
     sections: list[EquipmentSection] = []
     current_header: str | None = None
@@ -84,12 +89,17 @@ def split_sections(mail_id: str, lines: list[str]) -> list[EquipmentSection]:
         header_text: str | None = None
 
         numbered_match = _numbered_header_match(line)
-        if numbered_match:
+        if numbered_match and (uses_numbered_headers or not has_bare_unit_headers):
             header_text = numbered_match.group(1)
         elif not uses_numbered_headers:
             dot_match = _DOT_BULLET.match(line)
             if dot_match and not _is_field_label_line(dot_match.group(1)):
                 header_text = dot_match.group(1)
+            elif (
+                not line.startswith((".", "-", "->"))
+                and _UNIT_MARKER.search(line)
+            ):
+                header_text = line
 
         if header_text is not None:
             flush()

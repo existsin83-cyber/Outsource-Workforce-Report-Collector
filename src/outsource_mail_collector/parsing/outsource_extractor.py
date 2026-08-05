@@ -41,7 +41,7 @@ _CUMULATIVE_MAN_DAY = re.compile(
     r"누적\s*공수\s*[:：]?\s*(?P<value>\d+(?:\.\d+)?)\s*(?:MD|공수)?"
 )
 _DAY_NIGHT_HEADCOUNT = re.compile(
-    r"주간\s*(?P<day>\d+(?:\.\d+)?)\s*,?\s*야간\s*(?P<night>\d+(?:\.\d+)?)"
+    r"주간\s*(?P<day>\d+(?:\.\d+)?)\s*명?\s*,?\s*야간\s*(?P<night>\d+(?:\.\d+)?)\s*명?"
 )
 _UNIT_BLOCK = re.compile(r"^-?\s*#?\d+\s*호기\s*[:：]?\s*(?P<rest>.*)$")
 
@@ -108,7 +108,11 @@ def _extract_vendor_style(section: EquipmentSection, tracking_no: str | None) ->
 
 def _extract_inline_style(section: EquipmentSection) -> list[OutsourceWorkRecord]:
     headcount_match = _HEADCOUNT_INLINE.search(section.section_text)
-    if not headcount_match:
+    day_night_match = _DAY_NIGHT_HEADCOUNT.search(section.section_text)
+    cumulative_match = _CUMULATIVE_MAN_DAY.search(section.section_text)
+    total_matches = list(_TOTAL_MAN_DAY.finditer(section.section_text))
+    total_match = total_matches[0] if total_matches else None
+    if not headcount_match and not day_night_match and not (cumulative_match or total_match):
         return []  # 외주 인원 언급이 전혀 없음 -> 정상적인 "외주 없음" 케이스
 
     cumulative_match = _CUMULATIVE_MAN_DAY.search(section.section_text)
@@ -134,7 +138,23 @@ def _extract_inline_style(section: EquipmentSection) -> list[OutsourceWorkRecord
     else:
         cumulative_man_day = None
 
-    confidence = 0.5 if headcount_match.group("night") is not None else 0.35
+    if headcount_match:
+        actual_headcount = float(headcount_match.group("count"))
+        night_headcount = (
+            float(headcount_match.group("night"))
+            if headcount_match.group("night") is not None
+            else None
+        )
+        confidence = 0.5 if night_headcount is not None else 0.35
+    elif day_night_match:
+        actual_headcount = float(day_night_match.group("day"))
+        night_headcount = float(day_night_match.group("night"))
+        confidence = 0.45
+    else:
+        actual_headcount = None
+        night_headcount = None
+        confidence = 0.25
+
     if cumulative_man_day is not None:
         confidence += 0.10
 
@@ -143,12 +163,8 @@ def _extract_inline_style(section: EquipmentSection) -> list[OutsourceWorkRecord
             work_record_id=_record_id(section, 0),
             equipment_record_id=f"{section.mail_id}:{section.section_index}",
             vendor_name=None,
-            actual_headcount=float(headcount_match.group("count")),
-            night_headcount=(
-                float(headcount_match.group("night"))
-                if headcount_match.group("night") is not None
-                else None
-            ),
+            actual_headcount=actual_headcount,
+            night_headcount=night_headcount,
             daily_man_day=(
                 float(daily_match.group("value")) if daily_match else None
             ),
