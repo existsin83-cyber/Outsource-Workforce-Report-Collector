@@ -165,6 +165,7 @@ class StoredWorkReportRow:
     deleted_at: str | None
     created_at: str
     updated_at: str
+    sender_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1281,9 +1282,9 @@ class SQLiteRepository:
 
         with self._connect() as conn:
             existing = conn.execute(
-                """
-                SELECT * FROM work_report_rows
-                WHERE extracted_record_id = ? AND source_type = ?
+                f"""
+                {_WORK_REPORT_SELECT}
+                WHERE wr.extracted_record_id = ? AND wr.source_type = ?
                 """,
                 (extracted_record_id, RowSource.MAIL.value),
             ).fetchone()
@@ -1384,7 +1385,7 @@ class SQLiteRepository:
     def get_work_report_row(self, row_id: int) -> StoredWorkReportRow:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT * FROM work_report_rows WHERE row_id = ?", (row_id,)
+                f"{_WORK_REPORT_SELECT} WHERE wr.row_id = ?", (row_id,)
             ).fetchone()
         if row is None:
             raise KeyError(row_id)
@@ -1399,20 +1400,20 @@ class SQLiteRepository:
     ) -> list[StoredWorkReportRow]:
         if include_deleted:
             date_filter = (
-                "(work_date BETWEEN ? AND ? "
-                "OR (work_date IS NULL AND deleted_at IS NOT NULL))"
+                "(wr.work_date BETWEEN ? AND ? "
+                "OR (wr.work_date IS NULL AND wr.deleted_at IS NOT NULL))"
             )
             deleted_filter = ""
         else:
-            date_filter = "work_date BETWEEN ? AND ?"
-            deleted_filter = "AND deleted_at IS NULL"
+            date_filter = "wr.work_date BETWEEN ? AND ?"
+            deleted_filter = "AND wr.deleted_at IS NULL"
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT * FROM work_report_rows
+                {_WORK_REPORT_SELECT}
                 WHERE {date_filter}
                 {deleted_filter}
-                ORDER BY work_date, row_id
+                ORDER BY wr.work_date, wr.row_id
                 """,
                 (date_from.isoformat(), date_to.isoformat()),
             ).fetchall()
@@ -1423,13 +1424,13 @@ class SQLiteRepository:
     ) -> list[StoredWorkReportRow]:
         """Return every persisted compilation row for scoped refresh work."""
 
-        deleted_filter = "" if include_deleted else "WHERE deleted_at IS NULL"
+        deleted_filter = "" if include_deleted else "WHERE wr.deleted_at IS NULL"
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT * FROM work_report_rows
+                {_WORK_REPORT_SELECT}
                 {deleted_filter}
-                ORDER BY work_date, row_id
+                ORDER BY wr.work_date, wr.row_id
                 """
             ).fetchall()
         return [_work_report_from_row(row) for row in rows]
@@ -1790,6 +1791,13 @@ class SQLiteRepository:
         ]
 
 
+_WORK_REPORT_SELECT = """
+SELECT wr.*, pm.sender_name AS sender_name
+FROM work_report_rows AS wr
+LEFT JOIN processed_mails AS pm ON pm.mail_entry_id = wr.mail_entry_id
+"""
+
+
 _REVIEW_SELECT = """
 SELECT
     er.*,
@@ -1952,6 +1960,9 @@ def _work_report_from_row(row: sqlite3.Row) -> StoredWorkReportRow:
         deleted_at=row["deleted_at"],
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
+        sender_name=(
+            row["sender_name"] if "sender_name" in row.keys() else None
+        ),
     )
 
 

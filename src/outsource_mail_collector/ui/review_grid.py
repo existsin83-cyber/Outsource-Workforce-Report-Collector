@@ -29,7 +29,9 @@ from outsource_mail_collector.ui.work_report_guidance import (
 
 _COLUMNS = (
     "",
+    "No.",
     "작업일",
+    "담당자",
     "거래처명",
     "Tracking No.",
     "장비명",
@@ -161,7 +163,9 @@ class ReviewGridWidget(QTableWidget):
             else _review_status_text(row.review_status)
         )
         values = (
+            str(row_index + 1),
             row.work_date.isoformat() if row.work_date else "확인 필요",
+            row.sender_name or "",
             row.vendor_name or "",
             row.tracking_no or "",
             row.equipment_name or "",

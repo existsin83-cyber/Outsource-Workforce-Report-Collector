@@ -10,7 +10,9 @@ from outsource_mail_collector.domain.work_report import WorkReportIssueCode
 
 
 COLUMN_HELP: Mapping[str, str] = MappingProxyType({
+    "No.": "화면에 표시된 행 순번입니다. 위치를 가리킬 때 사용합니다.",
     "작업일": "메일 제목과 본문에서 확인한 작업일입니다. 확인되지 않으면 사용자가 검토해야 합니다.",
+    "담당자": "이 행의 근거가 된 업무보고 메일을 보낸 사람입니다. 수동 추가 행은 비어 있습니다.",
     "거래처명": "메일에서 확인한 거래처 또는 협력사 이름입니다.",
     "Tracking No.": "메일에서 확인한 작업 추적 번호입니다. Excel에 보낼 행을 식별할 때 사용합니다.",
     "장비명": "메일에서 확인한 장비 또는 호기 이름입니다.",

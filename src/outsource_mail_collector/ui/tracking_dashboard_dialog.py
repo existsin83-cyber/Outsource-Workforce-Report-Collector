@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QMenu,
     QPushButton,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -201,7 +202,9 @@ class TrackingDashboardDialog(QDialog):
         self.setWindowTitle(
             "완료 장비 목록" if completed_only else "수주 공수 대시보드"
         )
-        self.resize(1450, 760)
+        self.resize(1450, 900)
+        self.setMinimumSize(900, 560)
+        self.setSizeGripEnabled(True)
         root_layout = QVBoxLayout(self)
         self.final_preview_view: FinalReportDialog | None = None
         if final_preview is not None and not completed_only:
@@ -233,7 +236,18 @@ class TrackingDashboardDialog(QDialog):
             "기본값은 0이며, 셀을 더블클릭하거나 행을 선택 후 '선택 행 수정' "
             "버튼으로 수정할 수 있습니다."
         )
-        layout.addWidget(self.summary_table)
+        # 등록 건수가 늘어도 두 표가 서로를 짓누르지 않도록 사용자가 비율을 잡게 한다.
+        self.split = QSplitter(Qt.Orientation.Vertical)
+        self.split.addWidget(self.summary_table)
+        detail_pane = QWidget()
+        detail_layout = QVBoxLayout(detail_pane)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        self.split.addWidget(detail_pane)
+        self.split.setStretchFactor(0, 3)
+        self.split.setStretchFactor(1, 2)
+        outer_layout = layout
+        layout = detail_layout
+        outer_layout.addWidget(self.split, 1)
         self.guidance_label = QLabel("Tracking No.를 선택해 상세 내역을 확인하세요.")
         self.guidance_label.setWordWrap(True)
         layout.addWidget(self.guidance_label)
@@ -265,6 +279,7 @@ class TrackingDashboardDialog(QDialog):
             lambda *_args: self._on_detail_current_changed()
         )
         layout.addWidget(self.detail_table)
+        layout = outer_layout
         self.edit_button = QPushButton("선택 행 수정")
         self.edit_button.setToolTip(
             "상단 표에서 Tracking No.를 선택하면 초기 누적을, 하단 표에서 "
@@ -367,6 +382,7 @@ class TrackingDashboardDialog(QDialog):
         self._summary_blocked = [
             bool(summary.blockers) for summary in self._summaries
         ]
+        self.summary_table.resizeColumnsToContents()
         _paint_current_row(self.summary_table, self._summary_blocked)
         if not self._summaries:
             self._detail_rows = ()
@@ -487,6 +503,7 @@ class TrackingDashboardDialog(QDialog):
                     self.detail_table.setItem(row_index, column, item)
         finally:
             self.detail_table.blockSignals(detail_signals_blocked)
+        self.detail_table.resizeColumnsToContents()
         self._repaint_detail_rows()
         if summary.blockers:
             self.guidance_label.setText(
@@ -700,9 +717,14 @@ def _table(headers: tuple[str, ...]) -> QTableWidget:
     table.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
     table.verticalHeader().setVisible(False)
     table.horizontalHeader().setSectionResizeMode(
-        QHeaderView.ResizeMode.ResizeToContents
+        QHeaderView.ResizeMode.Interactive
     )
     table.horizontalHeader().setStretchLastSection(True)
+    # 행이 많아져도 컬럼이 내용만큼 무한히 넓어지지 않도록 상한을 둔다.
+    table.horizontalHeader().setMaximumSectionSize(260)
+    table.setHorizontalScrollMode(
+        QAbstractItemView.ScrollMode.ScrollPerPixel
+    )
     return table
 
 

@@ -23,7 +23,9 @@ import uuid
 
 from outsource_mail_collector.domain.models import EquipmentSection, OutsourceWorkRecord
 
-_TRACKING_NO = re.compile(r"수주번호\s*[:：]\s*([^\n]+)")
+_TRACKING_NO = re.compile(
+    r"수주번호\s*[:：]\s*(.+?)(?=\s*외주\s*인원|\s*$)", re.MULTILINE
+)
 _VENDOR_HEADER = re.compile(r"외주\s*인원\s*[–\-]\s*(\S[^\n]*)")
 _HEADCOUNT_INLINE = re.compile(
     r"외주\s*인원\s*[:：]?\s*(?P<count>\d+(?:\.\d+)?)\s*명"
@@ -48,7 +50,9 @@ AMBIGUOUS_NOTE_PREFIX = "AMBIGUOUS_NUMBER:"
 
 def _extract_tracking_no(text: str) -> str | None:
     match = _TRACKING_NO.search(text)
-    return match.group(1).strip() if match else None
+    if not match:
+        return None
+    return match.group(1).strip().rstrip(",") or None
 
 
 def _new_record_id() -> str:

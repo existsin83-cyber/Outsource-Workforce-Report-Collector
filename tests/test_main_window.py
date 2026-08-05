@@ -27,6 +27,7 @@ from outsource_mail_collector.domain.work_report import (
     WorkReportIssueCode,
 )
 from outsource_mail_collector.ui.main_window import MainWindow
+from outsource_mail_collector.ui.review_grid import _COLUMNS
 
 
 def _app() -> QApplication:
@@ -348,7 +349,7 @@ def test_row_inclusion_toggle_calls_service_and_reloads():
     window = MainWindow(services)
     buttons = {
         button.text(): button
-        for button in window.review_grid.cellWidget(0, 15).findChildren(
+        for button in window.review_grid.cellWidget(0, _COLUMNS.index("작업")).findChildren(
             QToolButton
         )
     }
@@ -358,10 +359,10 @@ def test_row_inclusion_toggle_calls_service_and_reloads():
     assert services.work_report_service.inclusion_calls == [
         (1, False, "사용자 반영 제외")
     ]
-    assert window.review_grid.item(0, 14).text() == "제외"
+    assert window.review_grid.item(0, _COLUMNS.index("포함")).text() == "제외"
     buttons = {
         button.text(): button
-        for button in window.review_grid.cellWidget(0, 15).findChildren(
+        for button in window.review_grid.cellWidget(0, _COLUMNS.index("작업")).findChildren(
             QToolButton
         )
     }

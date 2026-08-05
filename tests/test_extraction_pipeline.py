@@ -142,6 +142,7 @@ def test_format_c_inline_headcount_no_manday_at_all():
     records0 = extract_work_records(sections[0])
     assert len(records0) == 1
     record = records0[0]
+    assert sections[0].tracking_no == "ZZ260203~260207, ZZ260403"
     assert record.actual_headcount == 6.0
     assert record.night_headcount == 6.0
     assert record.daily_man_day is None

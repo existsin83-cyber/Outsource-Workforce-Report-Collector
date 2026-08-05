@@ -88,6 +88,7 @@ class WorkReportRow:
     resolution_note: str | None
     night_headcount: int | None = None
     deleted_at: str | None = None
+    sender_name: str | None = None
 
     @property
     def per_person_display(self) -> str:
@@ -276,6 +277,7 @@ def work_report_row_from_stored(stored: StoredWorkReportRow) -> WorkReportRow:
         warning_confirmed=stored.warning_confirmed,
         resolution_note=stored.resolution_note,
         deleted_at=stored.deleted_at,
+        sender_name=stored.sender_name,
     )
 
 
