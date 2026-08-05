@@ -47,6 +47,8 @@ _STRUCTURAL_BLOCKERS = {
 _BLOCKING_CODES = _STRUCTURAL_BLOCKERS | {
     WorkReportIssueCode.CUMULATIVE_BASELINE_REQUIRED,
 }
+# 초기 누적 기본값. 사용자가 등록하지 않으면 이 값에서 누적이 시작된다.
+_DEFAULT_INITIAL_CUMULATIVE = Decimal("0")
 _RECALCULATION_TRIGGER_FIELDS = {
     "work_date",
     "vendor_name",
@@ -468,12 +470,13 @@ class WorkReportService:
         baseline = self._repository.get_cumulative_baseline(
             row.tracking_no or ""
         )
+        if row.work_date is None:
+            raise ValueError("작업일을 먼저 확정해 주세요.")
         if (
-            baseline is None
-            or row.work_date is None
-            or row.work_date <= baseline.effective_through_date
+            baseline is not None
+            and row.work_date <= baseline.effective_through_date
         ):
-            raise ValueError("명시적인 누적 기준을 먼저 등록해 주세요.")
+            raise ValueError("초기 누적 기준일 이전 작업일은 확정할 수 없습니다.")
         confirmed = self._repository.confirm_work_report_row(
             row_id,
             confirmed_daily_man_day=quantize_man_day(
@@ -492,6 +495,82 @@ class WorkReportService:
         return work_report_row_from_stored(
             self._repository.get_work_report_row(row_id)
         )
+
+    def confirm_rows(
+        self, row_ids: Iterable[int], *, resolution_note: str
+    ) -> list[WorkReportRow]:
+        """Bulk-confirm rows atomically using each row's unambiguous candidate.
+
+        A row confirms automatically only when its reported and calculated
+        values agree (or one already carries a prior confirmed value). Any
+        row that is structurally blocked, dated on or before an explicit
+        cumulative baseline, or genuinely ambiguous aborts the whole batch so
+        partial confirms never happen; ambiguous rows still require the
+        per-row review dialog.
+        """
+
+        ids, note = _validated_bulk_request(
+            row_ids, resolution_note, action_label="공수 확정"
+        )
+        with self._repository.transaction():
+            stored_rows = self._validate_bulk_rows(
+                ids, require_deleted=False, action_label="공수 확정"
+            )
+            planned: list[tuple[int, Decimal, Decimal]] = []
+            for row_id, stored in zip(ids, stored_rows):
+                row = work_report_row_from_stored(stored)
+                blockers = set(row.issue_codes) & _STRUCTURAL_BLOCKERS
+                if blockers:
+                    raise ValueError(
+                        f"구조적 오류가 있는 행은 일괄 확정할 수 없습니다: {row_id}"
+                    )
+                confirmed_daily = _bulk_confirm_candidate(
+                    row.confirmed_daily_man_day,
+                    row.reported_daily_man_day,
+                    row.calculated_daily_man_day,
+                )
+                confirmed_cumulative = _bulk_confirm_candidate(
+                    row.confirmed_cumulative_man_day,
+                    row.reported_cumulative_man_day,
+                    row.calculated_cumulative_man_day,
+                )
+                if confirmed_daily is None or confirmed_cumulative is None:
+                    raise ValueError(
+                        "메일 값과 계산 값이 달라 개별 확인이 필요한 행입니다: "
+                        f"{row_id}"
+                    )
+                baseline = self._repository.get_cumulative_baseline(
+                    row.tracking_no or ""
+                )
+                if row.work_date is None:
+                    raise ValueError(f"작업일을 먼저 확정해 주세요: {row_id}")
+                if (
+                    baseline is not None
+                    and row.work_date <= baseline.effective_through_date
+                ):
+                    raise ValueError(
+                        "초기 누적 기준일 이전 작업일은 확정할 수 없습니다: "
+                        f"{row_id}"
+                    )
+                planned.append((row_id, confirmed_daily, confirmed_cumulative))
+            for row_id, confirmed_daily, confirmed_cumulative in planned:
+                self._repository.confirm_work_report_row(
+                    row_id,
+                    confirmed_daily_man_day=quantize_man_day(
+                        Decimal(str(confirmed_daily))
+                    ),
+                    confirmed_cumulative_man_day=quantize_man_day(
+                        Decimal(str(confirmed_cumulative))
+                    ),
+                    resolution_note=note,
+                )
+            self._recalculate_affected_tracking_series(stored_rows)
+        return [
+            work_report_row_from_stored(
+                self._repository.get_work_report_row(row_id)
+            )
+            for row_id in ids
+        ]
 
     def set_included(
         self, row_id: int, included: bool, *, resolution_note: str
@@ -780,6 +859,11 @@ class WorkReportService:
                 _append_issue(issues, issue)
 
         warning_confirmed = not issues
+        # confirmed_daily/cumulative are never auto-stored here even when
+        # unambiguous (mail value == calculated value): a row only counts
+        # toward the dashboard once a user explicitly confirms it via
+        # confirm_row/confirm_rows. The candidate values above still drive
+        # this row's own calculated_* preview.
         return {
             "work_date": work_date,
             "work_date_confirmed": work_date_confirmed,
@@ -792,10 +876,10 @@ class WorkReportService:
             "per_person_man_day": parsed_per_person,
             "reported_daily_man_day": reported_daily,
             "calculated_daily_man_day": daily_calculated,
-            "confirmed_daily_man_day": confirmed_daily,
+            "confirmed_daily_man_day": None,
             "reported_cumulative_man_day": reported_cumulative,
             "calculated_cumulative_man_day": cumulative_calculated,
-            "confirmed_cumulative_man_day": confirmed_cumulative,
+            "confirmed_cumulative_man_day": None,
             "cumulative_series_key": series_key,
             "issue_codes": tuple(issues),
             "review_status": review_status,
@@ -810,24 +894,29 @@ class WorkReportService:
         if work_date is None:
             return None
         baseline = self._repository.get_cumulative_baseline(series_key)
-        if (
-            baseline is None
-            or work_date <= baseline.effective_through_date
-        ):
+        effective_through = (
+            baseline.effective_through_date if baseline is not None else date.min
+        )
+        seed = (
+            baseline.cumulative_man_day
+            if baseline is not None
+            else _DEFAULT_INITIAL_CUMULATIVE
+        )
+        if work_date <= effective_through:
             return None
         candidates = [
             row
             for row in self._repository.list_work_report_rows(
-                baseline.effective_through_date, work_date
+                effective_through, work_date
             )
             if normalize_tracking_no(row.tracking_no or "") == series_key
             and row.work_date is not None
-            and row.work_date > baseline.effective_through_date
+            and row.work_date > effective_through
             and row.work_date < work_date
             and row.included
         ]
         candidates.sort(key=lambda row: (row.work_date or date.min, row.row_id))
-        running = baseline.cumulative_man_day
+        running = seed
         for row in candidates:
             if row.confirmed_daily_man_day is None:
                 return None
@@ -909,8 +998,14 @@ class WorkReportService:
             WorkReportIssueCode.CUMULATIVE_BASELINE_CONFIRMATION,
             WorkReportIssueCode.CUMULATIVE_BASELINE_REQUIRED,
         }
-        running = baseline.cumulative_man_day if baseline is not None else None
-        ledger_blocked = baseline is None
+        # 초기 누적을 등록하지 않은 수주는 0부터 시작한다(사용자 결정).
+        # 프로그램 사용 이전 누적이 있는 경우에만 명시적으로 초기 누적을 등록한다.
+        running = (
+            baseline.cumulative_man_day
+            if baseline is not None
+            else _DEFAULT_INITIAL_CUMULATIVE
+        )
+        ledger_blocked = False
         for row in rows:
             issues = [
                 issue
@@ -1093,6 +1188,22 @@ def _validated_bulk_request(
     if len(set(ids)) != len(ids):
         raise ValueError(f"{action_label}할 행 ID가 중복되었습니다.")
     return ids, note
+
+
+def _bulk_confirm_candidate(
+    confirmed: Decimal | None,
+    reported: Decimal | None,
+    calculated: Decimal | None,
+) -> Decimal | None:
+    if confirmed is not None:
+        return confirmed
+    if (
+        reported is not None
+        and calculated is not None
+        and reported == calculated
+    ):
+        return reported
+    return None
 
 
 def _known_issue_codes(values: tuple[str, ...]) -> list[WorkReportIssueCode]:

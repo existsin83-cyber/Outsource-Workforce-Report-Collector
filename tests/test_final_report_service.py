@@ -38,7 +38,7 @@ def test_preview_blocks_included_warning_until_individually_confirmed(tmp_path):
         service.confirm()
 
 
-def test_preview_uses_all_active_dashboard_dates_and_derives_snapshot_range(
+def test_preview_collapses_one_tracking_no_across_dates_to_a_single_row(
     tmp_path,
 ):
     repository = SQLiteRepository(tmp_path / "collector.db")
@@ -58,12 +58,11 @@ def test_preview_uses_all_active_dashboard_dates_and_derives_snapshot_range(
 
     preview = FinalReportService(repository).preview()
 
-    assert [row.work_date for row in preview.rows] == [
-        date(2026, 7, 13),
-        date(2026, 7, 29),
-    ]
+    assert len(preview.rows) == 1
+    assert preview.rows[0].latest_work_date == date(2026, 7, 29)
+    assert preview.rows[0].latest_confirmed_cumulative_man_day == Decimal("6.0")
     assert (preview.date_from, preview.date_to) == (
-        date(2026, 7, 13),
+        date(2026, 7, 29),
         date(2026, 7, 29),
     )
 
@@ -303,7 +302,9 @@ def test_man_day_basis_does_not_label_invalid_counts_as_mixed(
     assert man_day_basis(actual_headcount, night_headcount) == "확인 필요"
 
 
-def test_preview_orders_daily_aggregates_by_tracking_number(tmp_path):
+def test_preview_orders_same_date_rows_by_vendor_setting_order_then_tracking_no(
+    tmp_path,
+):
     repository = SQLiteRepository(tmp_path / "collector.db")
     repository.save_vendor(None, "업체B", [], True)
     repository.save_vendor(None, "업체A", [], True)
@@ -322,9 +323,9 @@ def test_preview_orders_daily_aggregates_by_tracking_number(tmp_path):
     assert [
         (row.vendor_name, row.tracking_no) for row in preview.rows
     ] == [
-        ("업체A", "A-01"),
         ("업체B", "B-01"),
         ("업체B", "B-02"),
+        ("업체A", "A-01"),
     ]
 
 
@@ -378,13 +379,13 @@ def test_same_day_tracking_rows_aggregate_and_snapshot_all_sources(tmp_path):
     assert row.vendor_name == "기준 업체"
     assert row.equipment_name == "기준 장비"
     assert row.business_team == "기준 팀"
-    assert row.actual_headcount == 3
-    assert row.night_headcount == 2
-    assert row.confirmed_daily_man_day == Decimal("4.0")
-    assert row.man_day_basis == "혼합"
-    assert row.reported_cumulative_man_day == Decimal("24.0")
-    assert row.calculated_cumulative_man_day == Decimal("24.0")
-    assert row.confirmed_cumulative_man_day == Decimal("24.0")
+    assert row.latest_actual_headcount == 3
+    assert row.latest_night_headcount == 2
+    assert row.latest_confirmed_daily_man_day == Decimal("4.0")
+    assert row.latest_man_day_basis == "혼합"
+    assert row.latest_reported_cumulative_man_day == Decimal("24.0")
+    assert row.latest_calculated_cumulative_man_day == Decimal("24.0")
+    assert row.latest_confirmed_cumulative_man_day == Decimal("24.0")
 
     snapshot = service.confirm()
 

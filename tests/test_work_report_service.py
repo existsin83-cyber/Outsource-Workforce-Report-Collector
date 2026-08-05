@@ -338,9 +338,9 @@ def test_manual_row_uses_same_calculation_and_can_cover_mail_free_date(tmp_path)
     assert row.source_type is RowSource.MANUAL
     assert row.mail_entry_id is None
     assert row.calculated_daily_man_day == Decimal("3.0")
-    assert row.confirmed_daily_man_day == Decimal("3.0")
+    assert row.confirmed_daily_man_day is None
     assert WorkReportIssueCode.DAILY_MISSING in row.issue_codes
-    assert WorkReportIssueCode.CUMULATIVE_BASELINE_REQUIRED in row.issue_codes
+    assert WorkReportIssueCode.CUMULATIVE_BASELINE_REQUIRED not in row.issue_codes
 
 
 def test_manual_row_keeps_legacy_uniform_per_person_input_compatible(tmp_path):
@@ -425,6 +425,29 @@ def test_explicit_baseline_recalculates_tracking_series_in_date_and_row_order(
         resolution_note="기존 누적 확인",
     )
 
+    # Confirmation is never automatic, even for unambiguous rows: the ledger
+    # only advances through explicitly confirmed daily values, in date order.
+    service.confirm_row(
+        first.row_id,
+        confirmed_daily_man_day=Decimal("3.0"),
+        confirmed_cumulative_man_day=Decimal("13.0"),
+        resolution_note="첫날 확정",
+    )
+    # Reported cumulative (99.0) mismatches the running total; the user
+    # resolves it by accepting the calculated value instead.
+    service.confirm_row(
+        second.row_id,
+        confirmed_daily_man_day=Decimal("2.0"),
+        confirmed_cumulative_man_day=Decimal("15.0"),
+        resolution_note="계산값 채택으로 불일치 해소",
+    )
+    service.confirm_row(
+        third.row_id,
+        confirmed_daily_man_day=Decimal("1.0"),
+        confirmed_cumulative_man_day=Decimal("16.0"),
+        resolution_note="다음 날 확정",
+    )
+
     recalculated_first = repository.get_work_report_row(first.row_id)
     recalculated_second = repository.get_work_report_row(second.row_id)
     recalculated_third = repository.get_work_report_row(third.row_id)
@@ -433,6 +456,9 @@ def test_explicit_baseline_recalculates_tracking_series_in_date_and_row_order(
     assert recalculated_first.calculated_cumulative_man_day == Decimal("13.0")
     assert recalculated_first.confirmed_cumulative_man_day == Decimal("13.0")
     assert recalculated_second.calculated_cumulative_man_day == Decimal("15.0")
+    # A per-row calculated-value override does not survive a later
+    # recalculation of the same series (e.g. confirming the third row):
+    # the mismatch against the mail-reported cumulative remains unresolved.
     assert recalculated_second.confirmed_cumulative_man_day is None
     assert recalculated_second.reported_cumulative_man_day == Decimal("99.0")
     assert WorkReportIssueCode.CUMULATIVE_MISMATCH in (
@@ -442,9 +468,7 @@ def test_explicit_baseline_recalculates_tracking_series_in_date_and_row_order(
     assert recalculated_third.confirmed_cumulative_man_day == Decimal("16.0")
 
 
-def test_missing_explicit_baseline_stays_blocking_and_cannot_be_confirmed(
-    tmp_path,
-):
+def test_missing_explicit_baseline_starts_the_ledger_at_zero(tmp_path):
     repository = SQLiteRepository(tmp_path / "collector.db")
     service = _work_report_service(repository)
     row = service.add_manual_row(
@@ -460,16 +484,20 @@ def test_missing_explicit_baseline_stays_blocking_and_cannot_be_confirmed(
         resolution_note="메일 없는 작업",
     )
 
-    assert row.calculated_cumulative_man_day is None
+    # 초기 누적을 등록하지 않으면 0에서 시작하므로 확정을 막지 않는다.
     assert row.confirmed_cumulative_man_day is None
-    assert WorkReportIssueCode.CUMULATIVE_BASELINE_REQUIRED in row.issue_codes
-    with pytest.raises(ValueError, match="누적 기준"):
-        service.confirm_row(
-            row.row_id,
-            confirmed_daily_man_day=Decimal("3.0"),
-            confirmed_cumulative_man_day=Decimal("13.0"),
-            resolution_note="누적 직접 입력",
-        )
+    assert WorkReportIssueCode.CUMULATIVE_BASELINE_REQUIRED not in row.issue_codes
+
+    service.confirm_row(
+        row.row_id,
+        confirmed_daily_man_day=Decimal("3.0"),
+        confirmed_cumulative_man_day=Decimal("3.0"),
+        resolution_note="누적 직접 입력",
+    )
+
+    recalculated = repository.get_work_report_row(row.row_id)
+    assert recalculated.calculated_cumulative_man_day == Decimal("3.0")
+    assert recalculated.confirmed_cumulative_man_day == Decimal("3.0")
 
 
 def test_include_delete_and_restore_recalculate_later_active_rows(tmp_path):
@@ -483,6 +511,8 @@ def test_include_delete_and_restore_recalculate_later_active_rows(tmp_path):
     )
     first = _add_manual_daily(service, date(2026, 7, 30), Decimal("3.0"))
     second = _add_manual_daily(service, date(2026, 7, 31), Decimal("2.0"))
+    _confirm_daily(service, first, daily=Decimal("3.0"), cumulative=Decimal("13.0"))
+    _confirm_daily(service, second, daily=Decimal("2.0"), cumulative=Decimal("15.0"))
     assert repository.get_work_report_row(second.row_id).calculated_cumulative_man_day == Decimal("15.0")
 
     service.set_included(
@@ -650,6 +680,8 @@ def test_moving_baseline_effective_date_clears_consumed_row_and_reseeds_later(
     )
     first = _add_manual_daily(service, date(2026, 7, 30), Decimal("3.0"))
     second = _add_manual_daily(service, date(2026, 7, 31), Decimal("2.0"))
+    _confirm_daily(service, first, daily=Decimal("3.0"), cumulative=Decimal("13.0"))
+    _confirm_daily(service, second, daily=Decimal("2.0"), cumulative=Decimal("15.0"))
     assert repository.get_work_report_row(first.row_id).calculated_cumulative_man_day == Decimal("13.0")
 
     service.save_cumulative_baseline(
@@ -679,6 +711,7 @@ def test_update_confirmed_daily_persists_requested_value_and_recalculates_later(
     )
     first = _add_manual_daily(service, date(2026, 7, 30), Decimal("3.0"))
     second = _add_manual_daily(service, date(2026, 7, 31), Decimal("2.0"))
+    _confirm_daily(service, second, daily=Decimal("2.0"), cumulative=Decimal("15.0"))
 
     updated = service.update_row(
         first.row_id,
@@ -736,16 +769,27 @@ def test_work_date_and_tracking_changes_recalculate_old_and_new_series(
     second = _add_manual_daily(
         service, date(2026, 7, 31), Decimal("2.0"), tracking_no="TRACK-A"
     )
+    _confirm_daily(service, first, daily=Decimal("3.0"), cumulative=Decimal("13.0"))
+    _confirm_daily(service, second, daily=Decimal("2.0"), cumulative=Decimal("15.0"))
 
-    moved_date = service.update_row(
+    # Changing a trigger field (work_date) re-opens the row as an unconfirmed
+    # candidate; correcting a date does not silently keep an old confirmation.
+    service.update_row(
         second.row_id,
         {"work_date": date(2026, 7, 29)},
         resolution_note="작업일 정정",
+    )
+    moved_date = _confirm_daily(
+        service, second, daily=Decimal("2.0"), cumulative=Decimal("12.0")
     )
 
     assert moved_date.calculated_cumulative_man_day == Decimal("12.0")
     assert repository.get_work_report_row(first.row_id).calculated_cumulative_man_day == Decimal("15.0")
 
+    # Retargeting to an unregistered tracking number surfaces
+    # WORK_ORDER_UNREGISTERED and blocks re-confirmation until the work
+    # order master is set up; the old series still recalculates correctly
+    # once the row leaves it.
     moved_tracking = service.update_row(
         moved_date.row_id,
         {"tracking_no": " track-b "},
@@ -753,7 +797,10 @@ def test_work_date_and_tracking_changes_recalculate_old_and_new_series(
     )
 
     assert moved_tracking.cumulative_series_key == "TRACK-B"
-    assert moved_tracking.calculated_cumulative_man_day == Decimal("22.0")
+    assert (
+        WorkReportIssueCode.WORK_ORDER_UNREGISTERED
+        in moved_tracking.issue_codes
+    )
     assert repository.get_work_report_row(first.row_id).calculated_cumulative_man_day == Decimal("13.0")
 
 
@@ -776,7 +823,7 @@ def test_mixed_night_row_preserves_headcounts_and_calculates_daily(tmp_path):
     assert row.per_person_man_day is None
     assert row.per_person_display == "혼합"
     assert row.calculated_daily_man_day == Decimal("3.5")
-    assert row.confirmed_daily_man_day == Decimal("3.5")
+    assert row.confirmed_daily_man_day is None
     assert WorkReportIssueCode.INVALID_VALUE not in row.issue_codes
     assert WorkReportIssueCode.NIGHT_HEADCOUNT_INVALID not in row.issue_codes
 
@@ -917,7 +964,7 @@ def test_update_row_explicit_valid_night_correction_clears_invalid(tmp_path):
     assert corrected.night_headcount == 1
     assert corrected.per_person_man_day is None
     assert corrected.calculated_daily_man_day == Decimal("2.5")
-    assert corrected.confirmed_daily_man_day == Decimal("2.5")
+    assert corrected.confirmed_daily_man_day is None
     assert WorkReportIssueCode.NIGHT_HEADCOUNT_INVALID not in corrected.issue_codes
     assert (
         WorkReportIssueCode.NIGHT_HEADCOUNT_UNRESOLVED
@@ -987,6 +1034,22 @@ def _work_report_service(repository: SQLiteRepository) -> WorkReportService:
         repository,
         ManDayCalculationService(),
         WorkOrderMappingService(repository),
+    )
+
+
+def _confirm_daily(
+    service: WorkReportService,
+    row,
+    *,
+    daily: Decimal,
+    cumulative: Decimal,
+    note: str = "확정",
+):
+    return service.confirm_row(
+        row.row_id,
+        confirmed_daily_man_day=daily,
+        confirmed_cumulative_man_day=cumulative,
+        resolution_note=note,
     )
 
 

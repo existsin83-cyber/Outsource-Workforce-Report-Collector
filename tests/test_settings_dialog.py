@@ -18,6 +18,7 @@ from outsource_mail_collector.infrastructure.db.repository import (
 from outsource_mail_collector.ui.settings_dialog import (
     IncompleteWorkOrderError,
     SettingsDialog,
+    WorkOrderPrefill,
     _is_checked,
 )
 from outsource_mail_collector.ui.workers import FolderLoadWorker
@@ -86,6 +87,56 @@ def test_settings_dialog_saves_work_order_mapping(tmp_path):
     assert mapping.normalized_tracking_no == "AB260101"
     assert mapping.vendor_id == vendor.vendor_id
     assert mapping.business_team == "PKG"
+
+
+def test_work_order_prefill_opens_master_tab_selects_new_row_and_matches_active_vendor(
+    tmp_path,
+):
+    """Removing prefill application must leave the requested mapping row unavailable."""
+    _app()
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    matching_vendor = repository.save_vendor(None, "협력사A", [], True)
+    repository.save_vendor(None, "협력사B", [], True)
+
+    dialog = SettingsDialog(
+        SettingsService(repository, FakeOutlookAdapter()),
+        work_order_prefill=WorkOrderPrefill(
+            tracking_no="AB260102",
+            equipment_name="장비 2",
+            vendor_name="협력사A",
+            business_team="PKG",
+        ),
+    )
+
+    assert dialog.tabs.tabText(dialog.tabs.currentIndex()) == "수주 마스터"
+    assert dialog.work_order_table.currentRow() == 0
+    assert dialog.focusWidget() is dialog.work_order_table
+    assert dialog.work_order_table.item(0, 0).text() == "AB260102"
+    assert dialog.work_order_table.item(0, 1).text() == "장비 2"
+    assert dialog.work_order_table.cellWidget(0, 2).currentData() == matching_vendor.vendor_id
+    assert dialog.work_order_table.cellWidget(0, 3).currentText() == "PKG"
+
+
+def test_work_order_prefill_leaves_unknown_or_inactive_vendor_unselected(tmp_path):
+    """Selecting a non-active exact vendor would incorrectly infer a master-data match."""
+    _app()
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    repository.save_vendor(None, "협력사A", [], True)
+    repository.save_vendor(None, "비활성 업체", [], False)
+
+    dialog = SettingsDialog(
+        SettingsService(repository, FakeOutlookAdapter()),
+        work_order_prefill=WorkOrderPrefill(
+            tracking_no="AB260103",
+            equipment_name="장비 3",
+            vendor_name="협력사",
+            business_team="WA",
+        ),
+    )
+
+    vendor_combo = dialog.work_order_table.cellWidget(0, 2)
+    assert vendor_combo.currentIndex() == -1
+    assert vendor_combo.currentData() is None
 
 
 def test_settings_dialog_saves_new_vendor_and_mapping_in_one_save(tmp_path):

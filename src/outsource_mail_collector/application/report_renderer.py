@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from html import escape
-from itertools import groupby
 
 from outsource_mail_collector.application.models import (
     FinalReportRow,
@@ -46,44 +45,45 @@ class HtmlReportRenderer:
     """Render only confirmed snapshot values, with no repository access."""
 
     def render(self, snapshot: FinalReportSnapshot) -> RenderedReport:
-        title = _title(snapshot.date_from, snapshot.date_to)
-        html_parts = [
-            '<div style="font-family:맑은 고딕,Arial,sans-serif;">',
-            f'<div style="margin-bottom:10px;">{escape(title)}</div>',
-        ]
-        plain_parts = [title]
-
-        for work_date, grouped in groupby(
-            snapshot.rows, key=lambda row: row.work_date
-        ):
-            rows = tuple(grouped)
-            html_parts.append(f'<table style="{_TABLE_STYLE}">')
-            html_parts.append(
-                "<tr>"
-                + "".join(
-                    f'<th style="{_HEADER_STYLE}">{escape(header)}</th>'
-                    for header in _HEADERS
-                )
-                + "</tr>"
-            )
-            plain_parts.append("\t".join(_HEADERS))
-            for row in rows:
-                values = _row_values(row)
-                html_parts.append(
-                    "<tr>"
-                    + "".join(
-                        f'<td style="{_CELL_STYLE}">{escape(value)}</td>'
-                        for value in values
-                    )
-                    + "</tr>"
-                )
-                plain_parts.append("\t".join(values))
-            html_parts.append("</table>")
-        html_parts.append("</div>")
-        return RenderedReport(
-            html="".join(html_parts),
-            plain_text="\n".join(plain_parts),
+        return render_table(
+            _title(snapshot.date_from, snapshot.date_to),
+            [_row_values(row) for row in snapshot.rows],
         )
+
+
+def render_table(
+    title: str, rows: list[tuple[str, ...]]
+) -> RenderedReport:
+    """Render the nine-column outsource table from already-formatted values."""
+
+    html_parts = [
+        '<div style="font-family:맑은 고딕,Arial,sans-serif;">',
+        f'<div style="margin-bottom:10px;">{escape(title)}</div>',
+        f'<table style="{_TABLE_STYLE}">',
+        "<tr>"
+        + "".join(
+            f'<th style="{_HEADER_STYLE}">{escape(header)}</th>'
+            for header in _HEADERS
+        )
+        + "</tr>",
+    ]
+    plain_parts = [title, "\t".join(_HEADERS)]
+    for values in rows:
+        html_parts.append(
+            "<tr>"
+            + "".join(
+                f'<td style="{_CELL_STYLE}">{escape(value)}</td>'
+                for value in values
+            )
+            + "</tr>"
+        )
+        plain_parts.append("\t".join(values))
+    html_parts.append("</table>")
+    html_parts.append("</div>")
+    return RenderedReport(
+        html="".join(html_parts),
+        plain_text="\n".join(plain_parts),
+    )
 
 
 def _row_values(row: FinalReportRow) -> tuple[str, ...]:

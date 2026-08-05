@@ -145,9 +145,11 @@ class TrackingDashboardSummary:
     normalized_tracking_no: str
     tracking_no: str
     vendor_name: str | None
+    vendor_sort_order: int
     equipment_name: str | None
     business_team: str | None
     latest_work_date: date | None
+    latest_row_id: int
     latest_actual_headcount: int | None
     latest_night_headcount: int | None
     latest_man_day_basis: str

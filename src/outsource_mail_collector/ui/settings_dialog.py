@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -52,6 +53,16 @@ _BUSINESS_TEAMS = (
 _PENDING_VENDOR = "pending_vendor"
 
 
+@dataclass(frozen=True)
+class WorkOrderPrefill:
+    """Editable values used when opening a new work-order master row."""
+
+    tracking_no: str
+    equipment_name: str | None
+    vendor_name: str | None
+    business_team: str | None
+
+
 class IncompleteWorkOrderError(ValueError):
     """Raised when any populated work-order row is incomplete."""
 
@@ -65,6 +76,8 @@ class SettingsDialog(QDialog):
         self,
         settings_service: SettingsService,
         parent: QWidget | None = None,
+        *,
+        work_order_prefill: WorkOrderPrefill | None = None,
     ) -> None:
         super().__init__(parent)
         self._settings = settings_service
@@ -76,12 +89,12 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("설정")
         self.resize(760, 520)
         root = QVBoxLayout(self)
-        tabs = QTabWidget()
-        tabs.addTab(self._build_general_tab(), "일반")
-        tabs.addTab(self._build_employee_tab(), "담당자")
-        tabs.addTab(self._build_vendor_tab(), "업체")
-        tabs.addTab(self._build_work_order_tab(), "수주 마스터")
-        root.addWidget(tabs)
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self._build_general_tab(), "일반")
+        self.tabs.addTab(self._build_employee_tab(), "담당자")
+        self.tabs.addTab(self._build_vendor_tab(), "업체")
+        self.tabs.addTab(self._build_work_order_tab(), "수주 마스터")
+        root.addWidget(self.tabs)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
@@ -91,6 +104,8 @@ class SettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
         self._load()
+        if work_order_prefill is not None:
+            self._apply_work_order_prefill(work_order_prefill)
 
     def _build_general_tab(self) -> QWidget:
         tab = QWidget()
@@ -336,6 +351,31 @@ class SettingsDialog(QDialog):
             row, 4, _check_box(mapping.active if mapping else True)
         )
         return row
+
+    def _apply_work_order_prefill(self, prefill: WorkOrderPrefill) -> None:
+        row = self.add_work_order_row()
+        self.work_order_table.item(row, 0).setText(prefill.tracking_no)
+        self.work_order_table.item(row, 1).setText(prefill.equipment_name or "")
+        vendor_combo = self.work_order_table.cellWidget(row, 2)
+        if isinstance(vendor_combo, QComboBox) and prefill.vendor_name:
+            vendor_index = vendor_combo.findText(
+                prefill.vendor_name, Qt.MatchFlag.MatchExactly
+            )
+            if vendor_index >= 0:
+                vendor_combo.setCurrentIndex(vendor_index)
+        team_combo = self.work_order_table.cellWidget(row, 3)
+        if isinstance(team_combo, QComboBox) and prefill.business_team:
+            team_index = team_combo.findText(
+                prefill.business_team, Qt.MatchFlag.MatchExactly
+            )
+            if team_index < 0:
+                team_combo.addItem(prefill.business_team)
+                team_index = team_combo.count() - 1
+            team_combo.setCurrentIndex(team_index)
+        self.tabs.setCurrentWidget(self.work_order_table.parentWidget())
+        self.work_order_table.setCurrentCell(row, 0)
+        self.work_order_table.selectRow(row)
+        self.work_order_table.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _vendor_options(self) -> list[tuple[str, int | tuple[str, str]]]:
         options: list[tuple[str, int | tuple[str, str]]] = []

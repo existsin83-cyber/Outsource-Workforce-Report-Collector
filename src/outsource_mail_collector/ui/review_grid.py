@@ -41,12 +41,12 @@ _COLUMNS = (
     "계산 투입",
     "확정 투입",
     "메일 누적",
-    "계산 누적",
-    "확정 누적",
     "검증 상태",
     "포함",
     "작업",
 )
+_SELECT_ALL_UNCHECKED = "☐"
+_SELECT_ALL_CHECKED = "☑"
 _INCLUDED_COLUMN = _COLUMNS.index("포함")
 _ACTIONS_COLUMN = _COLUMNS.index("작업")
 _PROBLEM_BACKGROUND = QColor("#fff3e0")
@@ -86,6 +86,16 @@ class ReviewGridWidget(QTableWidget):
             self.horizontalHeaderItem(column).setToolTip(
                 COLUMN_HELP.get(name, "행을 선택하는 확인란입니다.")
             )
+        self.horizontalHeaderItem(0).setText(_SELECT_ALL_UNCHECKED)
+        self.horizontalHeaderItem(0).setToolTip(
+            "전체 선택: 표시된 모든 행의 선택을 켜거나 끕니다."
+        )
+        self.horizontalHeader().sectionClicked.connect(self._header_clicked)
+        self.itemChanged.connect(
+            lambda item: (
+                self._sync_select_all_header() if item.column() == 0 else None
+            )
+        )
         self.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.ResizeToContents
         )
@@ -100,6 +110,32 @@ class ReviewGridWidget(QTableWidget):
         self.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
             self._populate_row(row_index, row)
+        self._sync_select_all_header()
+
+    def set_all_checked(self, checked: bool) -> None:
+        state = (
+            Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        )
+        for row_index in range(self.rowCount()):
+            item = self.item(row_index, 0)
+            if item is not None:
+                item.setCheckState(state)
+        self._sync_select_all_header()
+
+    def _header_clicked(self, column: int) -> None:
+        if column != 0:
+            return
+        self.set_all_checked(
+            self.horizontalHeaderItem(0).text() != _SELECT_ALL_CHECKED
+        )
+
+    def _sync_select_all_header(self) -> None:
+        all_checked = self.rowCount() > 0 and len(
+            self.checked_row_ids()
+        ) == self.rowCount()
+        self.horizontalHeaderItem(0).setText(
+            _SELECT_ALL_CHECKED if all_checked else _SELECT_ALL_UNCHECKED
+        )
 
     def checked_row_ids(self) -> list[int]:
         result: list[int] = []
@@ -137,8 +173,6 @@ class ReviewGridWidget(QTableWidget):
             _display_decimal(row.calculated_daily_man_day),
             _display_decimal(row.confirmed_daily_man_day),
             _display_decimal(row.reported_cumulative_man_day),
-            _display_decimal(row.calculated_cumulative_man_day),
-            _display_decimal(row.confirmed_cumulative_man_day),
             issue_text,
         )
         problem = bool(row.issue_codes) and not row.warning_confirmed

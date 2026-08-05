@@ -45,7 +45,7 @@ def test_renderer_uses_nine_approved_columns_and_escapes_html() -> None:
     assert "calculated" not in rendered.html
 
 
-def test_renderer_repeats_header_at_each_date_boundary() -> None:
+def test_renderer_produces_a_single_table_across_multiple_tracking_dates() -> None:
     snapshot = _snapshot(
         date_to=date(2026, 7, 30),
         rows=(
@@ -56,8 +56,9 @@ def test_renderer_repeats_header_at_each_date_boundary() -> None:
 
     rendered = HtmlReportRenderer().render(snapshot)
 
-    assert rendered.html.count("<th") == 18
-    assert rendered.plain_text.count("일자\t거래처명") == 2
+    assert rendered.html.count("<table") == 1
+    assert rendered.html.count("<th") == 9
+    assert rendered.plain_text.count("일자\t거래처명") == 1
     assert "2026. 07. 29 (수) ~ 2026. 07. 30 (목) 전장 외주 공수표" in (
         rendered.html
     )

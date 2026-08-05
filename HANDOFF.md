@@ -56,6 +56,219 @@
 
 ## 세션 기록
 
+## 2026-08-03 17:05:26 KST — Tracking No. 통합 최종표 개편
+
+### 필수 식별 정보
+
+- 세션명: Tracking No. 통합 최종표 개편
+- 기록 시각: 2026-08-03 17:05:26 KST
+- 작성 주체: Claude Code (Sonnet 5)
+- 세션 ID: session_01V4pcnMrL89fshPjjLJE5Bw
+- 작업 디렉터리: D:\My_Work\Outsource Workforce Report Collector
+- Git 브랜치: master, 기준 커밋: cf5a3a2
+
+### 1. 세션 목표
+
+- 코덱스가 작성한 "Tracking No. 통합 최종표 개편 계획"을 검토·보완하고, 최종 미리보기와 표 복사를 수주 공수 대시보드처럼 Tracking No.당 한 행으로 통합한다.
+
+### 2. 시작 시점 상태
+
+- `FinalReportService.preview()`가 `TrackingDashboardService.active_daily_aggregates()`를 사용해 같은 Tracking No.가 여러 작업일에 걸쳐 있으면 최종표에도 그만큼 행이 반복됐다.
+- `HtmlReportRenderer`가 `work_date`로 groupby 하여 날짜별로 표를 여러 개 렌더링했다.
+- 직전 세션 기록(16:59:25 KST, 운영 데이터 초기화) 이후 상태에서 이어갔다. 운영 데이터는 빈 상태였다.
+
+### 3. 핵심 결정
+
+- 새 집계 로직을 작성하지 않고 기존 `TrackingDashboardService.summaries(include_completed=False)`를 최종표의 원천으로 재사용한다 — Tracking No.별 최신 유효값·blocker union/dedup·전체 `source_row_ids`를 이미 제공하기 때문이다.
+- 정렬 기준을 최근 작업일 내림차순 → 거래처 설정 순서(`vendor_sort_order`) → Tracking No.로 명시적으로 고정한다.
+- Tracking No.가 비어 있는 행도 개별(비그룹) 요약으로 포함해, 기존 방식대로면 사라졌을 차단 사유가 최종표에서 계속 보이게 한다.
+- 실제 Excel 출력, Excel COM, 미구현 Excel 반영 버튼은 이번 범위에서 변경하지 않는다.
+
+### 4. 수행 내용
+
+- `FinalReportService.preview()`가 `active_daily_aggregates()` 대신 `summaries(include_completed=False)`를 호출하도록 교체하고, `_final_report_sort_key`로 명시적 정렬을 추가했다.
+- `models.py`의 `TrackingDashboardSummary`에 `vendor_sort_order`, `latest_row_id` 필드를 추가했다.
+- `tracking_dashboard_service.py`의 `summaries()`가 Tracking No.가 빈 값인 행도 개별 요약에 포함하도록 그룹핑 키를 수정했다(기존에는 통째로 제외됐다).
+- `report_renderer.py`의 `HtmlReportRenderer.render()`에서 날짜별 반복 표 로직을 제거하고, 제목 1개 + 헤더 1개 + Tracking No.별 행으로 구성된 단일 표로 바꿨다(HTML/탭 구분 텍스트 동일).
+- `final_report_dialog.py`를 `TrackingDashboardSummary` 기반으로 표시하도록 바꾸고, `row_id` 기반으로 blocker를 재매칭하던 딕셔너리 로직을 삭제했다.
+- 관련 테스트 6개 파일을 새 계약에 맞게 갱신했다.
+- 앱을 재기동해 창이 정상적으로 뜨는 것을 확인했다(코드 실행 확인 수준이며, 데이터 기반 육안 검증은 아니다).
+
+### 5. 변경 파일
+
+- `src/outsource_mail_collector/application/models.py`
+- `src/outsource_mail_collector/application/final_report_service.py`
+- `src/outsource_mail_collector/application/tracking_dashboard_service.py`
+- `src/outsource_mail_collector/application/report_renderer.py`
+- `src/outsource_mail_collector/ui/final_report_dialog.py`
+- `tests/test_final_report_service.py`
+- `tests/test_final_report_dialog.py`
+- `tests/test_report_renderer.py`
+- `tests/test_tracking_dashboard_service.py`
+- `tests/test_tracking_dashboard_dialog.py`
+- `tests/test_main_window.py`
+
+### 6. 검증 결과
+
+- 전체 `pytest`: `292 passed`.
+- `python -m compileall src`: 통과.
+- `git diff --check`: 통과(LF→CRLF 경고만 있으며 실패는 아니다).
+
+### 7. 실패 및 미확인 사항
+
+- 클립보드 복사 테스트 1건(`test_dashboard_detail_table_copies_multirow_cells_with_blank_tsv_positions`)이 전체 스위트를 동시에 실행할 때 간헐적으로 실패했다. 단독 실행 시에는 통과했다. 이번 변경과의 인과관계는 확인하지 못했다.
+- 실제 Outlook COM, Excel COM, live DB, 사용자 데스크톱 GUI에서의 최종 미리보기(Tracking No.당 한 행, 정렬 순서, HTML·텍스트 복사 결과가 단일 표인지)는 검증하지 않았다.
+
+### 8. 현재 상태
+
+- 실환경 검증 필요: 코드·테스트 수준 구현은 끝났으나 실제 Outlook·Excel·GUI 검증이 남아 있다.
+
+### 9. 다음 세션 실행 순서
+
+1. 복사 DB로 실제 데스크톱 GUI에서 최종 미리보기를 열어, 같은 Tracking No.가 여러 날짜에 있어도 한 행만 보이는지 확인한다.
+2. 정렬(최근 작업일 내림차순 → 거래처 순서 → Tracking No.)이 화면에서 맞는지 확인한다.
+3. 표 복사(HTML 붙여넣기 + 탭 구분 텍스트 붙여넣기) 결과가 단일 표인지 확인한다.
+4. 확인되면 사용자 승인 후 이번 변경을 커밋한다.
+
+### 10. 위험 및 주의사항
+
+- `summaries()`의 그룹핑 키 변경(빈 Tracking No. 행 포함)은 최종표뿐 아니라 수주 공수 대시보드 화면의 요약 표에도 영향을 준다. `tracking_dashboard_service`/`tracking_dashboard_dialog` 테스트로만 회귀를 확인했고 실제 화면 확인은 하지 않았다.
+- `FinalReportRow.work_date` 필드의 의미가 "해당 Tracking No.의 최근 작업일"로 바뀌었으나 컬럼명은 그대로다. 이후 이 필드를 다루는 코드를 추가할 때 혼동하지 않도록 주의한다.
+
+### 11. Git 및 변경 경계
+
+- 브랜치: `master`, 기준 커밋: `cf5a3a2`.
+- 커밋, 푸시, 브랜치 변경은 하지 않았다.
+- 기존에 미커밋 상태로 남아 있던 다른 변경(`main_window.py`, `settings_dialog.py` 등 대시보드 등록 관련 작업)은 그대로 보존했다.
+
+### 12. 이전 기록 정정
+
+- 없음. 다만 이 기록 자체는, 같은 세션에서 작성 규칙(기록 위치·시각 형식·필수 목차)을 지키지 않고 문서 맨 끝에 잘못 추가했던 항목을 삭제한 뒤 규칙에 맞게 다시 작성한 것이다.
+
+## 2026-08-03 16:59:25 KST — 테스트용 운영 데이터 완전 초기화
+
+### 1. 세션 목표
+
+- 설정 메뉴의 데이터는 유지하고, 처음부터 수집·대시보드 테스트를 할 수 있도록 운영 데이터를 초기화한다.
+
+### 2. 수행 결과
+
+- 백업: `%LOCALAPPDATA%\\OutsourceMailCollector\\backups\\collector-before-operational-reset-20260803-165925.db`.
+- 삭제: `final_reports` 10건, `cumulative_baselines` 2건, `work_report_rows` 6건, `extracted_records` 7건, `processed_mails` 6건, `action_logs` 56건 및 연결된 빈 최종표·완료 상태 테이블.
+- 유지: `settings` 3건, `employees` 1건, `vendors` 1건, `work_order_mappings` 2건.
+
+### 3. 검증과 경계
+
+- `PRAGMA integrity_check`: `ok`.
+- `PRAGMA foreign_key_check`: 위반 0건.
+- 실행 중인 앱은 강제 종료하지 않았으므로, 빈 상태를 보려면 앱을 닫았다 다시 열어야 한다.
+- 코드·설정 데이터·커밋·푸시·브랜치 변경은 하지 않았다.
+
+## 2026-08-03 14:00:00 KST — 수주 등록 이동 버튼 대비 개선
+
+### 1. 세션 목표
+
+- 오류 행에서도 `수주 등록 이동` 버튼을 명확히 식별할 수 있게 한다.
+
+### 2. 변경
+
+- 버튼에 진한 빨강(`#b71c1c`) 배경, 흰색 굵은 글자, 테두리와 hover/pressed 상태를 적용했다.
+- 버튼 스타일 회귀 테스트를 추가했다.
+
+### 3. 검증과 경계
+
+- `tests/test_tracking_dashboard_dialog.py`: `18 passed`.
+- `git diff --check`: 통과.
+- 실제 Outlook, Excel, live DB 및 수주 미등록 데이터가 있는 데스크톱 GUI의 육안 검증은 수행하지 않았다.
+- 커밋, 푸시, 브랜치 변경은 하지 않았다.
+
+## 2026-08-03 13:25:24 KST — 대시보드 수주 등록 연결 및 표 사용성 개선
+
+### 1. 세션 목표
+
+- 수주 미등록 Tracking No.를 대시보드에서 수주 마스터로 바로 연결하고 메일 추출값을 자동 입력한다.
+- 대시보드 표의 선택·복사, 상세 행 번호, 작업일 정렬을 사용자 관점에 맞게 개선한다.
+
+### 2. 시작 시점 상태
+
+- `master`의 기준 커밋은 `cf5a3a2`였고 추적 파일 변경은 없었다.
+- 기존 미추적 파일과 별도 worktree는 보존했으며, 이전 승인에 따라 최신 완료/미리보기 기능이 있는 현재 작업 폴더에서 작업했다.
+- 관련 기존 Qt 테스트는 시작 전 `46 passed`였다.
+
+### 3. 핵심 결정
+
+- `수주 등록 이동`은 별도 간편창을 만들지 않고 기존 설정 창의 `수주 마스터` 탭과 원자적 저장 검증을 재사용한다.
+- Tracking No.와 장비명, 일관되게 추출된 업체명·사업팀을 자동 입력하되, 업체는 기존 활성 업체와 정확히 일치할 때만 선택한다.
+- 상세 첫 열은 DB 원본 행 ID 대신 현재 표시 순서의 1부터 시작하는 행 번호를 표시하며 내부 원본 행 연결은 변경하지 않는다.
+- 요약 기본 정렬은 최근 작업일 내림차이고, 날짜 없음은 항상 마지막, 동률은 Tracking No. 오름차로 고정한다.
+
+### 4. 수행 내용
+
+- 미등록 차단 사유가 있는 요약의 검증 상태 셀에 `수주 등록 이동` 버튼을 추가했다.
+- 수주 마스터 탭을 선택하고 신규 행에 추출값을 자동 입력하는 불변 `WorkOrderPrefill` 경로를 추가했다.
+- 저장 성공 시 수주 매핑 재적용, 메인 원본 목록, 대시보드, 내장 최종 미리보기를 갱신하고 취소 시 갱신하지 않도록 연결했다.
+- 갱신·정렬 후 이전 등록 버튼이 잘못 남지 않도록 검증 상태 셀 위젯을 재렌더링 전에 제거한다.
+- 같은 Tracking No. 선택이 유지돼도 등록 후 상세 표와 문제 안내를 서비스에서 명시적으로 다시 읽어 오래된 상세가 남지 않게 했다.
+- 요약·상세 표에 셀 단위 확장 선택, `Ctrl+C` 및 우클릭 TSV 복사를 추가했다.
+- 상세 첫 열을 `행 번호`로 바꾸고, 시작일 저장 옆에 작업일 오름차순·내림차순 버튼을 추가했다.
+- 승인 설계와 구현 계획을 `docs/superpowers/` 아래에 기록했다.
+
+### 5. 변경 파일
+
+- `src/outsource_mail_collector/ui/main_window.py`
+- `src/outsource_mail_collector/ui/settings_dialog.py`
+- `src/outsource_mail_collector/ui/tracking_dashboard_dialog.py`
+- `tests/test_main_window.py`
+- `tests/test_settings_dialog.py`
+- `tests/test_tracking_dashboard_dialog.py`
+- `docs/superpowers/specs/2026-08-03-dashboard-registration-and-table-usability-design.md`
+- `docs/superpowers/plans/2026-08-03-dashboard-registration-and-table-usability.md`
+- `HANDOFF.md`
+
+### 6. 검증 결과
+
+- 기준 관련 테스트: `46 passed in 17.11s`.
+- Task 1 RED: 복사·행 번호·정렬 신규 테스트 4건이 기능 부재로 실패함을 확인했다.
+- Task 1 GREEN 및 리뷰 보강: 대시보드 관련 `14 passed`; 실제 viewport 우클릭, 상세 다중 행·열 TSV와 빈 위치, 두 표의 셀 확장 선택을 포함했다.
+- Task 2 RED: `WorkOrderPrefill`, 등록 콜백 인자, 메인 등록 메서드 부재로 각각 실패함을 확인했다.
+- Task 2 GREEN 및 stale 버튼·상세 회귀 보강: 대시보드 `18 passed`, 관련 3개 UI 테스트 파일 `60 passed in 17.70s`.
+- 최종 전체 검증: `$env:PYTHONPATH='src'; $env:QT_QPA_PLATFORM='offscreen'; .\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest-basetemp-dashboard-registration-final2-20260803 -p no:cacheprovider` → `292 passed in 111.47s`.
+- `.\.venv\Scripts\python.exe -m compileall -q src tests` → 성공.
+- `git diff --check` → 오류 없음. LF/CRLF 변환 예정 경고만 출력됨.
+- 작업별 독립 코드 리뷰와 수정 후 재검토를 수행했으며, 열린 Important 이상 지적은 없다.
+
+### 7. 실패 및 미확인 사항
+
+- 실제 Outlook COM, Excel COM, 라이브 DB, 사용자 데스크톱 GUI는 실행하지 않았다.
+- 실제 화면에서 마우스 드래그 선택, 우클릭 메뉴 위치, 수주 마스터 저장 후 버튼 제거를 수동 확인하지 않았다.
+- 상세 갱신 보완 전 중간 전체 검증은 `291 passed`였고, 보완 후 최종 전체 검증을 새 임시 경로에서 다시 실행해 `292 passed`를 확인했다.
+
+### 8. 현재 상태
+
+- 요청한 네 가지 UI 개선은 코드, 회귀 테스트, 독립 리뷰 기준으로 완료됐다.
+- 변경은 현재 작업 폴더에 미커밋 상태로 남아 있다.
+
+### 9. 다음 세션 실행 순서
+
+1. 복사 DB 또는 테스트 데이터로 수주 미등록 행의 `수주 등록 이동` → 자동 입력 → 저장 → 버튼 제거와 최종 미리보기 갱신을 실제 GUI에서 확인한다.
+2. 요약·상세 표의 드래그 선택, Ctrl+C, 우클릭 복사와 작업일 정렬 버튼을 실제 Windows 화면에서 확인한다.
+3. 사용자 승인 시 변경 범위를 확인한 뒤 커밋한다.
+
+### 10. 위험 및 주의사항
+
+- 자동화 검증은 PySide6 offscreen 경로이며 실제 Windows 렌더링과 사용자 입력 감각을 완전히 대체하지 않는다.
+- 자동 입력 업체명이 활성 업체와 정확히 일치하지 않으면 의도적으로 미선택 상태이며 사용자가 업체 탭 등록 또는 선택을 완료해야 한다.
+
+### 11. Git 및 변경 경계
+
+- 브랜치: `master`, 기준 커밋: `cf5a3a2`, `origin/master`보다 2커밋 앞선 상태에서 시작했다.
+- 이번 작업의 커밋·푸시·브랜치 변경은 수행하지 않았다.
+- 기존 미추적 파일과 별도 worktree는 수정·삭제하지 않았다.
+
+### 12. 이전 기록 정정
+
+- 없음.
+
 ## 2026-08-03 12:10:08 KST — 최종 표를 수주 공수 대시보드 활성 집계에 동기화
 
 ### 1. 세션 목표

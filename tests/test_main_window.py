@@ -10,11 +10,14 @@ from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QToolButton
 import pywintypes
 
 import outsource_mail_collector.ui.main_window as main_window_module
+import outsource_mail_collector.ui.row_review_flow as row_review_flow_module
 from outsource_mail_collector.application.models import (
     CollectionResult,
     CollectionWorkflowResult,
     ExtractionResult,
     FinalReportPreview,
+    FinalizationBlocker,
+    TrackingDashboardSummary,
     WorkReportRangeResult,
     WorkReportRow,
 )
@@ -197,7 +200,7 @@ def test_night_issue_review_updates_headcounts_before_confirmation(
             }
 
     monkeypatch.setattr(
-        main_window_module, "ProblemReviewDialog", FakeProblemDialog
+        row_review_flow_module, "ProblemReviewDialog", FakeProblemDialog
     )
 
     window._review_problem_row(1)
@@ -232,8 +235,15 @@ def test_blue_dashboard_button_opens_dashboard_with_final_preview(monkeypatch):
     captured: dict[str, object] = {}
 
     class FakeDashboardDialog:
-        def __init__(self, *args, final_preview=None, **kwargs):
+        def __init__(
+            self,
+            *args,
+            final_preview=None,
+            work_order_registration_callback=None,
+            **kwargs,
+        ):
             captured["final_preview"] = final_preview
+            captured["registration_callback"] = work_order_registration_callback
             self.final_preview_view = None
 
         def exec(self):
@@ -247,6 +257,7 @@ def test_blue_dashboard_button_opens_dashboard_with_final_preview(monkeypatch):
 
     assert services.final_report_service.preview_calls == [()]
     assert captured["final_preview"] is not None
+    assert callable(captured["registration_callback"])
     assert captured["executed"] is True
     assert "#1565c0" in window.dashboard_button.styleSheet()
     assert not hasattr(window, "preview_button")
@@ -275,21 +286,60 @@ def test_accepting_settings_refreshes_work_order_mappings(monkeypatch):
     assert services.work_report_service.mapping_refresh_calls == 1
 
 
-def test_excel_button_shows_preparation_notice(monkeypatch):
+def test_work_order_registration_acceptance_prefills_settings_and_refreshes_rows(monkeypatch):
+    """Removing accepted-save refreshes would leave newly mapped rows unresolved."""
     _app()
-    window = MainWindow(_services())
-    shown: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        QMessageBox,
-        "information",
-        lambda _parent, title, text: shown.append((title, text)),
-    )
+    services = _services()
+    window = MainWindow(services)
+    captured: dict[str, object] = {}
+    reloaded: list[bool] = []
+    summary = _dashboard_summary()
 
-    window.excel_button.click()
+    class FakeSettingsDialog:
+        DialogCode = QDialog.DialogCode
 
-    assert shown
-    assert "실제 Excel 연동은 아직 준비되지 않았습니다." in shown[0][1]
-    assert "실 워크북 확보 후 사용할 수 있습니다." in shown[0][1]
+        def __init__(self, settings_service, parent=None, *, work_order_prefill=None):
+            captured["settings_service"] = settings_service
+            captured["prefill"] = work_order_prefill
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(main_window_module, "SettingsDialog", FakeSettingsDialog)
+    monkeypatch.setattr(window, "_reload_rows", lambda: reloaded.append(True))
+
+    assert window._open_work_order_registration(summary) is True
+    assert captured["settings_service"] is services.settings_service
+    assert captured["prefill"].tracking_no == "AB260101"
+    assert captured["prefill"].equipment_name == "장비 1"
+    assert captured["prefill"].vendor_name == "업체A"
+    assert captured["prefill"].business_team == "WA"
+    assert services.work_report_service.mapping_refresh_calls == 1
+    assert reloaded == [True]
+
+
+def test_work_order_registration_cancellation_skips_global_refresh(monkeypatch):
+    """Refreshing on cancel would report a master-data change that was never saved."""
+    _app()
+    services = _services()
+    window = MainWindow(services)
+    reloaded: list[bool] = []
+
+    class FakeSettingsDialog:
+        DialogCode = QDialog.DialogCode
+
+        def __init__(self, settings_service, parent=None, *, work_order_prefill=None):
+            pass
+
+        def exec(self):
+            return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(main_window_module, "SettingsDialog", FakeSettingsDialog)
+    monkeypatch.setattr(window, "_reload_rows", lambda: reloaded.append(True))
+
+    assert window._open_work_order_registration(_dashboard_summary()) is False
+    assert services.work_report_service.mapping_refresh_calls == 0
+    assert reloaded == []
 
 
 def test_row_inclusion_toggle_calls_service_and_reloads():
@@ -298,7 +348,7 @@ def test_row_inclusion_toggle_calls_service_and_reloads():
     window = MainWindow(services)
     buttons = {
         button.text(): button
-        for button in window.review_grid.cellWidget(0, 17).findChildren(
+        for button in window.review_grid.cellWidget(0, 15).findChildren(
             QToolButton
         )
     }
@@ -308,10 +358,10 @@ def test_row_inclusion_toggle_calls_service_and_reloads():
     assert services.work_report_service.inclusion_calls == [
         (1, False, "사용자 반영 제외")
     ]
-    assert window.review_grid.item(0, 16).text() == "제외"
+    assert window.review_grid.item(0, 14).text() == "제외"
     buttons = {
         button.text(): button
-        for button in window.review_grid.cellWidget(0, 17).findChildren(
+        for button in window.review_grid.cellWidget(0, 15).findChildren(
             QToolButton
         )
     }
@@ -350,6 +400,66 @@ def test_bulk_soft_delete_confirms_outlook_is_untouched_and_reloads(monkeypatch)
     ]
     assert window.review_grid.rowCount() == 0
     assert services.work_report_service.list_calls == initial_reload_count + 1
+
+
+def test_confirm_selected_rows_calls_bulk_confirm_and_reloads():
+    _app()
+    services = _services()
+    services.work_report_service.rows.append(_row(2))
+    window = MainWindow(services)
+    for row_index in range(2):
+        window.review_grid.item(row_index, 0).setCheckState(
+            Qt.CheckState.Checked
+        )
+    initial_reload_count = services.work_report_service.list_calls
+
+    window.confirm_selected_button.click()
+
+    assert services.work_report_service.bulk_confirm_calls == [
+        ([1, 2], "사용자 선택 일괄 확정")
+    ]
+    assert services.work_report_service.list_calls == initial_reload_count + 1
+
+
+def test_confirm_selected_rows_empty_selection_shows_message(monkeypatch):
+    _app()
+    services = _services()
+    window = MainWindow(services)
+    messages: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda _parent, _title, text: messages.append(text),
+    )
+
+    window.confirm_selected_button.click()
+
+    assert "확정할 행을 선택해 주세요" in messages[0]
+    assert services.work_report_service.bulk_confirm_calls == []
+
+
+def test_confirm_selected_rows_service_error_shows_warning_without_reload(
+    monkeypatch,
+):
+    _app()
+    services = _services()
+    services.work_report_service.bulk_confirm_error = ValueError(
+        "메일 값과 계산 값이 달라 개별 확인이 필요한 행입니다: 1"
+    )
+    window = MainWindow(services)
+    window.review_grid.item(0, 0).setCheckState(Qt.CheckState.Checked)
+    initial_reload_count = services.work_report_service.list_calls
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, text: warnings.append(text),
+    )
+
+    window.confirm_selected_button.click()
+
+    assert "개별 확인이 필요한 행입니다" in warnings[0]
+    assert services.work_report_service.list_calls == initial_reload_count
 
 
 def test_bulk_soft_delete_empty_selection_and_cancel_do_not_mutate(monkeypatch):
@@ -540,6 +650,7 @@ def test_dashboard_button_receives_application_services_and_refresh(monkeypatch)
             *,
             final_preview=None,
             preview_supplier=None,
+            work_order_registration_callback=None,
         ):
             captured.update(
                 dashboard_service=dashboard_service,
@@ -547,6 +658,7 @@ def test_dashboard_button_receives_application_services_and_refresh(monkeypatch)
                 refresh_callback=refresh_callback,
                 final_preview=final_preview,
                 preview_supplier=preview_supplier,
+                work_order_registration_callback=work_order_registration_callback,
             )
 
         def exec(self):
@@ -561,6 +673,7 @@ def test_dashboard_button_receives_application_services_and_refresh(monkeypatch)
     assert captured["dashboard_service"] is services.tracking_dashboard_service
     assert captured["work_report_service"] is services.work_report_service
     assert captured["preview_supplier"] is not None
+    assert callable(captured["work_order_registration_callback"])
     captured["preview_supplier"]()
     assert services.final_report_service.preview_calls == [(), ()]
     assert captured["executed"] is True
@@ -578,6 +691,8 @@ class _WorkReportService:
         self.restore_calls: list[tuple[int, str]] = []
         self.bulk_delete_calls: list[tuple[list[int], str]] = []
         self.bulk_restore_calls: list[tuple[list[int], str]] = []
+        self.bulk_confirm_calls: list[tuple[list[int], str]] = []
+        self.bulk_confirm_error: ValueError | None = None
         self.bulk_error: ValueError | None = None
         self.deleted_rows: list[WorkReportRow] = []
         self.list_calls = 0
@@ -643,6 +758,12 @@ class _WorkReportService:
             )
         return restored
 
+    def confirm_rows(self, row_ids, *, resolution_note):
+        self.bulk_confirm_calls.append((list(row_ids), resolution_note))
+        if self.bulk_confirm_error is not None:
+            raise self.bulk_confirm_error
+        return list(self.rows)
+
     def refresh_work_order_mappings(self):
         self.mapping_refresh_calls += 1
         return self.rows
@@ -703,6 +824,33 @@ def _services():
         final_report_service=_FinalReportService(),
         report_renderer=SimpleNamespace(),
         clipboard_writer=SimpleNamespace(),
+    )
+
+
+def _dashboard_summary() -> TrackingDashboardSummary:
+    return TrackingDashboardSummary(
+        normalized_tracking_no="AB260101",
+        tracking_no="AB260101",
+        vendor_name="업체A",
+        vendor_sort_order=1,
+        equipment_name="장비 1",
+        business_team="WA",
+        latest_work_date=date(2026, 8, 2),
+        latest_row_id=7,
+        latest_actual_headcount=3,
+        latest_night_headcount=1,
+        latest_man_day_basis="혼합",
+        latest_confirmed_daily_man_day=Decimal("3.5"),
+        latest_reported_cumulative_man_day=Decimal("23.5"),
+        latest_calculated_cumulative_man_day=Decimal("23.5"),
+        latest_confirmed_cumulative_man_day=Decimal("23.5"),
+        initial_cumulative_man_day=Decimal("20.0"),
+        source_row_ids=(7,),
+        blockers=(
+            FinalizationBlocker(7, "WORK_ORDER_UNREGISTERED", "수주 마스터 등록 필요"),
+        ),
+        start_date=None,
+        completed_at=None,
     )
 
 

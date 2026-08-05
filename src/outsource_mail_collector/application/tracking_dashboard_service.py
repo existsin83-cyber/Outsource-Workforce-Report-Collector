@@ -87,16 +87,18 @@ class TrackingDashboardService:
         }
         grouped: dict[str, list[TrackingDailyAggregate]] = defaultdict(list)
         for aggregate in self._all_daily_aggregates():
-            if aggregate.normalized_tracking_no:
-                grouped[aggregate.normalized_tracking_no].append(aggregate)
+            key = aggregate.normalized_tracking_no or f"__ROW__{aggregate.row_id}"
+            grouped[key].append(aggregate)
         summaries = [
             self._summary_for_tracking(
-                tracking_no, rows, statuses.get(tracking_no)
+                rows[0].normalized_tracking_no,
+                rows,
+                statuses.get(rows[0].normalized_tracking_no),
             )
-            for tracking_no, rows in grouped.items()
+            for rows in grouped.values()
             if include_completed
-            or statuses.get(tracking_no) is None
-            or statuses[tracking_no].completed_at is None
+            or statuses.get(rows[0].normalized_tracking_no) is None
+            or statuses[rows[0].normalized_tracking_no].completed_at is None
         ]
         return tuple(
             sorted(
@@ -240,13 +242,16 @@ class TrackingDashboardService:
         ):
             return final_row.calculated_cumulative_man_day
         if normalized not in running:
-            running[normalized] = (
-                baseline.cumulative_man_day
-                if baseline is not None
-                else final_row.calculated_cumulative_man_day
-            )
-            if baseline is None:
+            if baseline is not None:
+                running[normalized] = baseline.cumulative_man_day
+            elif final_row.calculated_cumulative_man_day is not None:
+                running[normalized] = final_row.calculated_cumulative_man_day
                 return running[normalized]
+            else:
+                # ponytail: no explicit baseline -> show a 0-based running total
+                # so the dashboard is readable. CUMULATIVE_BASELINE_REQUIRED
+                # still blocks finalization, so nothing is silently accepted.
+                running[normalized] = Decimal("0")
         previous = running[normalized]
         if previous is None or daily is None:
             running[normalized] = None
@@ -281,9 +286,11 @@ class TrackingDashboardService:
             normalized_tracking_no=normalized,
             tracking_no=latest.tracking_no or normalized,
             vendor_name=latest.vendor_name,
+            vendor_sort_order=latest.vendor_sort_order,
             equipment_name=latest.equipment_name,
             business_team=latest.business_team,
             latest_work_date=latest.work_date,
+            latest_row_id=latest.row_id,
             latest_actual_headcount=latest.actual_headcount,
             latest_night_headcount=latest.night_headcount,
             latest_man_day_basis=latest.man_day_basis,

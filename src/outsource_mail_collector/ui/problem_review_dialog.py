@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
+from PySide6.QtCore import QDate
 from PySide6.QtWidgets import (
     QComboBox,
+    QDateEdit,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -38,6 +41,10 @@ class ProblemReviewDialog(QDialog):
         actual_headcount: int | None = None,
         night_headcount: int | None = None,
         headcount_correction: bool = False,
+        work_date: date | None = None,
+        date_correction: bool = False,
+        tracking_no: str | None = None,
+        series_key_correction: bool = False,
         duplicate_mode: bool = False,
         parent: QWidget | None = None,
     ) -> None:
@@ -49,6 +56,8 @@ class ProblemReviewDialog(QDialog):
             or actual_headcount is not None
             or night_headcount is not None
         )
+        self._date_correction = date_correction
+        self._series_key_correction = series_key_correction
         layout = QFormLayout(self)
         self.instruction_label = QLabel(
             "메일값은 메일 본문에서 읽은 값, 자동 계산값은 인원·공수 "
@@ -93,6 +102,18 @@ class ProblemReviewDialog(QDialog):
         self.direct_input_button.clicked.connect(self._choose_direct_input)
         self.actual_headcount_edit = QLineEdit(_display_int(actual_headcount))
         self.night_headcount_edit = QLineEdit(_display_int(night_headcount))
+        self.work_date_edit = QDateEdit()
+        self.work_date_edit.setCalendarPopup(True)
+        initial_work_date = work_date or date.today()
+        self.work_date_edit.setDate(
+            QDate(
+                initial_work_date.year,
+                initial_work_date.month,
+                initial_work_date.day,
+            )
+        )
+        self.tracking_no_edit = QLineEdit(tracking_no or "")
+        self.tracking_no_edit.setPlaceholderText("예: SE260101")
         self.duplicate_decision = QComboBox()
         self.duplicate_decision.addItem("선택", None)
         self.duplicate_decision.addItem("기존 보고 유지", "KEEP_OLD")
@@ -118,6 +139,10 @@ class ProblemReviewDialog(QDialog):
         if duplicate_mode:
             layout.addRow("중복 처리", self.duplicate_decision)
         else:
+            if self._date_correction:
+                layout.addRow("작업일자", self.work_date_edit)
+            if self._series_key_correction:
+                layout.addRow("Tracking No.", self.tracking_no_edit)
             if self._headcount_correction:
                 layout.addRow("실제 작업인원", self.actual_headcount_edit)
                 layout.addRow("야근 인원", self.night_headcount_edit)
@@ -194,6 +219,16 @@ class ProblemReviewDialog(QDialog):
                 )
             values["actual_headcount"] = actual
             values["night_headcount"] = night
+        if self._date_correction:
+            selected = self.work_date_edit.date()
+            values["work_date"] = date(
+                selected.year(), selected.month(), selected.day()
+            )
+        if self._series_key_correction:
+            tracking_no = self.tracking_no_edit.text().strip()
+            if not tracking_no:
+                raise ValueError("Tracking No.를 입력해 주세요.")
+            values["tracking_no"] = tracking_no
         return values
 
     def _accept_if_valid(self) -> None:

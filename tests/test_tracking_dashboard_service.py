@@ -156,6 +156,35 @@ def test_dashboard_calculates_baseline_plus_confirmed_daily(tmp_path):
     assert daily[0].blockers == ()
 
 
+def test_missing_baseline_still_shows_a_zero_based_running_total(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    _create_row(
+        repository,
+        work_date=date(2026, 7, 29),
+        confirmed_daily=Decimal("3.0"),
+        reported_cumulative=None,
+        calculated_cumulative=None,
+        confirmed_cumulative=None,
+    )
+    _create_row(
+        repository,
+        work_date=date(2026, 7, 30),
+        confirmed_daily=Decimal("2.0"),
+        reported_cumulative=None,
+        calculated_cumulative=None,
+        confirmed_cumulative=None,
+    )
+
+    daily = _dashboard_service(repository).daily_aggregates(
+        date(2026, 7, 29), date(2026, 7, 30)
+    )
+
+    assert [row.calculated_cumulative_man_day for row in daily] == [
+        Decimal("3.0"),
+        Decimal("5.0"),
+    ]
+
+
 def test_reported_cumulative_mismatch_blocks_against_calculated_value(tmp_path):
     repository = SQLiteRepository(tmp_path / "collector.db")
     repository.save_cumulative_baseline(
@@ -412,7 +441,7 @@ def test_unresolved_date_row_remains_visible_and_blocks_finalization(tmp_path):
         for blocker in summary.blockers
     )
     assert len(preview.rows) == 1
-    assert preview.rows[0].work_date is None
+    assert preview.rows[0].latest_work_date is None
     assert preview.rows[0].source_row_ids == (unresolved.row_id,)
     assert preview.can_confirm is False
     assert any(

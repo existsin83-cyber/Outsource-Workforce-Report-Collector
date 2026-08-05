@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import date
-from decimal import Decimal
 
 try:
     import pywintypes
@@ -29,6 +28,7 @@ from PySide6.QtWidgets import (
 from outsource_mail_collector.application.container import ApplicationServices
 from outsource_mail_collector.application.models import (
     CollectionWorkflowResult,
+    TrackingDashboardSummary,
     WorkReportRow,
 )
 from outsource_mail_collector.domain.work_report import WorkReportIssueCode
@@ -40,7 +40,11 @@ from outsource_mail_collector.ui.problem_review_dialog import (
     ProblemReviewDialog,
 )
 from outsource_mail_collector.ui.review_grid import ReviewGridWidget
-from outsource_mail_collector.ui.settings_dialog import SettingsDialog
+from outsource_mail_collector.ui.row_review_flow import review_single_row
+from outsource_mail_collector.ui.settings_dialog import (
+    SettingsDialog,
+    WorkOrderPrefill,
+)
 from outsource_mail_collector.ui.tracking_dashboard_dialog import (
     TrackingDashboardDialog,
 )
@@ -160,14 +164,16 @@ class MainWindow(QMainWindow):
             "QPushButton:pressed {background:#08306b;}"
         )
         self.dashboard_button.clicked.connect(self._open_tracking_dashboard)
-        self.excel_button = QPushButton("Excel 반영")
-        self.excel_button.clicked.connect(self._show_excel_notice)
+        self.confirm_selected_button = QPushButton("선택 공수 확정")
+        self.confirm_selected_button.clicked.connect(
+            self._confirm_selected_rows
+        )
         layout.addWidget(self.manual_button)
         layout.addWidget(self.delete_button)
         layout.addWidget(self.recovery_button)
+        layout.addWidget(self.confirm_selected_button)
         layout.addWidget(self.dashboard_button)
         layout.addStretch()
-        layout.addWidget(self.excel_button)
         return bar
 
     def start_collection(self) -> None:
@@ -309,64 +315,24 @@ class MainWindow(QMainWindow):
                 )
                 self._reload_rows()
             return
-        dialog_arguments: dict[str, object] = {
-            "reported_daily": row.reported_daily_man_day,
-            "calculated_daily": row.calculated_daily_man_day,
-            "reported_cumulative": row.reported_cumulative_man_day,
-            "calculated_cumulative": row.calculated_cumulative_man_day,
-            "confirmed_daily": _confirmed_candidate(
-                row.confirmed_daily_man_day,
-                row.reported_daily_man_day,
-                row.calculated_daily_man_day,
-            ),
-            "confirmed_cumulative": _confirmed_candidate(
-                row.confirmed_cumulative_man_day,
-                row.reported_cumulative_man_day,
-                row.calculated_cumulative_man_day,
-            ),
-            "issue_codes": row.issue_codes,
-            "parent": self,
-        }
-        night_issue_codes = {
-            WorkReportIssueCode.NIGHT_HEADCOUNT_UNRESOLVED,
-            WorkReportIssueCode.NIGHT_HEADCOUNT_INVALID,
-        }
-        if set(row.issue_codes) & night_issue_codes:
-            dialog_arguments["actual_headcount"] = row.actual_headcount
-            dialog_arguments["night_headcount"] = row.night_headcount
-            dialog_arguments["headcount_correction"] = True
-        dialog = ProblemReviewDialog(**dialog_arguments)
-        if dialog.exec() == dialog.DialogCode.Accepted:
-            try:
-                values = dialog.values()
-                resolution_note = str(values["resolution_note"])
-                headcount_changes = {
-                    field_name: values[field_name]
-                    for field_name in (
-                        "actual_headcount",
-                        "night_headcount",
-                    )
-                    if field_name in values
-                }
-                if headcount_changes:
-                    self._services.work_report_service.update_row(
-                        row_id,
-                        headcount_changes,
-                        resolution_note=resolution_note,
-                    )
-                self._services.work_report_service.confirm_row(
-                    row_id,
-                    confirmed_daily_man_day=values[
-                        "confirmed_daily_man_day"
-                    ],
-                    confirmed_cumulative_man_day=values[
-                        "confirmed_cumulative_man_day"
-                    ],
-                    resolution_note=resolution_note,
-                )
-            except ValueError as exc:
-                QMessageBox.warning(self, "행 확정 실패", str(exc))
+        if review_single_row(row, self._services.work_report_service, self):
             self._reload_rows()
+
+    def _confirm_selected_rows(self) -> None:
+        row_ids = self.review_grid.checked_row_ids()
+        if not row_ids:
+            QMessageBox.information(
+                self, "확정할 행 선택", "공수를 확정할 행을 선택해 주세요."
+            )
+            return
+        try:
+            self._services.work_report_service.confirm_rows(
+                row_ids, resolution_note="사용자 선택 일괄 확정"
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "선택 공수 확정 실패", str(exc))
+            return
+        self._reload_rows()
 
     def _set_row_included(self, row_id: int, included: bool) -> None:
         try:
@@ -466,6 +432,7 @@ class MainWindow(QMainWindow):
             self,
             final_preview=preview,
             preview_supplier=self._services.final_report_service.preview,
+            work_order_registration_callback=self._open_work_order_registration,
         )
         final_preview_view = getattr(dialog, "final_preview_view", None)
         if final_preview_view is not None:
@@ -489,17 +456,18 @@ class MainWindow(QMainWindow):
         )
 
     def _copy_final(self, dialog: FinalReportDialog) -> None:
-        if dialog.snapshot is None or dialog.rendered_report is None:
-            return
+        rendered = dialog.current_rendered_report()
         try:
-            self._clipboard_writer.write(dialog.rendered_report)
+            self._clipboard_writer.write(rendered)
         except RuntimeError as exc:
-            QMessageBox.warning(self, "표 복사 실패", str(exc))
+            dialog.show_copy_error(str(exc))
+            return
+        if dialog.snapshot is None:
             return
         updated = self._services.final_report_service.mark_copied(
             dialog.snapshot.report_id
         )
-        dialog.set_confirmed_report(updated, dialog.rendered_report)
+        dialog.set_confirmed_report(updated, rendered)
 
     def _open_original(self, mail_entry_id: str) -> None:
         if not mail_entry_id:
@@ -519,13 +487,24 @@ class MainWindow(QMainWindow):
             self._services.work_report_service.refresh_work_order_mappings()
             self._reload_rows()
 
-    def _show_excel_notice(self) -> None:
-        QMessageBox.information(
+    def _open_work_order_registration(
+        self, summary: TrackingDashboardSummary
+    ) -> bool:
+        dialog = SettingsDialog(
+            self._services.settings_service,
             self,
-            "Excel 연동 준비 중",
-            "실제 Excel 연동은 아직 준비되지 않았습니다.\n"
-            "실 워크북 확보 후 사용할 수 있습니다.",
+            work_order_prefill=WorkOrderPrefill(
+                tracking_no=summary.tracking_no,
+                equipment_name=summary.equipment_name,
+                vendor_name=summary.vendor_name,
+                business_team=summary.business_team,
+            ),
         )
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return False
+        self._services.work_report_service.refresh_work_order_mappings()
+        self._reload_rows()
+        return True
 
     def summary_value(self, title: str) -> str:
         return self._summary_labels[title].text()
@@ -539,19 +518,3 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _qdate_to_date(value: QDate) -> date:
         return date(value.year(), value.month(), value.day())
-
-
-def _confirmed_candidate(
-    confirmed: Decimal | None,
-    reported: Decimal | None,
-    calculated: Decimal | None,
-) -> Decimal | None:
-    if confirmed is not None:
-        return confirmed
-    if (
-        reported is not None
-        and calculated is not None
-        and reported == calculated
-    ):
-        return reported
-    return None
