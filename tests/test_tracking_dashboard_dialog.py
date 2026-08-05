@@ -905,6 +905,72 @@ def test_completion_refreshes_embedded_final_preview(monkeypatch):
     dialog.close()
 
 
+def test_delete_button_is_red_and_requires_a_selected_tracking_no(monkeypatch):
+    """선택 없이 삭제하면 서비스 삭제가 호출되면 안 된다."""
+    _app()
+    dashboard_service = _DashboardService(
+        summaries=(_summary(),), details=(_row(7),)
+    )
+    dialog = TrackingDashboardDialog(
+        dashboard_service, _WorkReportService(), lambda: None
+    )
+    shown: list[tuple] = []
+    monkeypatch.setattr(
+        dialog_module.QMessageBox,
+        "information",
+        lambda *args: shown.append(args),
+    )
+
+    dialog.delete_button.click()
+
+    assert "#b71c1c" in dialog.delete_button.styleSheet()
+    assert "color:white" in dialog.delete_button.styleSheet()
+    assert shown
+    assert dashboard_service.deleted == []
+    dialog.close()
+
+
+def test_confirmed_delete_refreshes_dashboard_preview_and_main(monkeypatch):
+    """삭제 확인 후에는 선택 Tracking No.만 삭제하고 모든 화면을 갱신한다."""
+    _app()
+    dashboard_service = _DashboardService(
+        summaries=(_summary(),), details=(_row(7),)
+    )
+    refreshes: list[str] = []
+    preview_calls: list[str] = []
+    initial_preview = FinalReportPreview(
+        date_from=date(2026, 7, 29),
+        date_to=date(2026, 7, 29),
+        rows=(_summary(),),
+        blockers=(),
+    )
+
+    def preview_supplier() -> FinalReportPreview:
+        preview_calls.append("deleted")
+        return FinalReportPreview(None, None, (), ())
+
+    dialog = TrackingDashboardDialog(
+        dashboard_service,
+        _WorkReportService(),
+        lambda: refreshes.append("main"),
+        final_preview=initial_preview,
+        preview_supplier=preview_supplier,
+    )
+    monkeypatch.setattr(
+        dialog_module.QMessageBox,
+        "question",
+        lambda *_args: dialog_module.QMessageBox.StandardButton.Yes,
+    )
+
+    dialog.summary_table.selectRow(0)
+    dialog.delete_button.click()
+
+    assert dashboard_service.deleted == ["AB260101"]
+    assert preview_calls == ["deleted"]
+    assert refreshes == ["main"]
+    dialog.close()
+
+
 def test_completed_dialog_uses_same_summary_table_and_resumes_selected_row(
     monkeypatch,
 ):
@@ -1010,6 +1076,7 @@ class _DashboardService:
         self.start_dates: list[tuple[str, date]] = []
         self.completed: list[str] = []
         self.resumed: list[str] = []
+        self.deleted: list[str] = []
 
     def summaries(self):
         self.summary_calls += 1
@@ -1027,6 +1094,9 @@ class _DashboardService:
 
     def resume(self, tracking_no):
         self.resumed.append(tracking_no)
+
+    def delete(self, tracking_no):
+        self.deleted.append(tracking_no)
 
     def completed_summaries(self):
         return self._summaries

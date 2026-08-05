@@ -382,12 +382,21 @@ class TrackingDashboardDialog(QDialog):
         layout.addWidget(self.edit_button)
         self.complete_button = QPushButton("작업 완료")
         self.complete_button.clicked.connect(self._complete_selected)
+        self.delete_button = QPushButton("삭제")
+        self.delete_button.setStyleSheet(
+            "QPushButton {background:#b71c1c;color:white;font-weight:700;"
+            "padding:4px 8px;border:1px solid #7f0000;border-radius:3px;}"
+            "QPushButton:hover {background:#7f0000;}"
+            "QPushButton:pressed {background:#4a0000;}"
+        )
+        self.delete_button.clicked.connect(self._delete_selected)
         self.resume_button = QPushButton("작업 재개")
         self.resume_button.clicked.connect(self._resume_selected)
         self.resume_button.setVisible(completed_only)
         self.complete_button.setVisible(not completed_only)
         actions = QHBoxLayout()
         actions.addWidget(self.complete_button)
+        actions.addWidget(self.delete_button)
         actions.addWidget(self.resume_button)
         if not completed_only:
             self.completed_list_button = QPushButton("완료 장비 목록")
@@ -735,6 +744,36 @@ class TrackingDashboardDialog(QDialog):
         if answer != QMessageBox.StandardButton.Yes:
             return
         self._dashboard_service.complete(summary.tracking_no)
+        self.refresh()
+        self._refresh_final_preview()
+        self._refresh_callback()
+
+    def _delete_selected(self) -> None:
+        summary = self._selected_summary()
+        if summary is None:
+            QMessageBox.information(
+                self,
+                "삭제할 Tracking No. 선택",
+                "삭제할 Tracking No.를 선택해 주세요.",
+            )
+            return
+        target_label = summary.tracking_no or "수주번호 미기재 행"
+        answer = QMessageBox.question(
+            self,
+            "Tracking No. 삭제 확인",
+            f"{target_label}을(를) 삭제하시겠습니까?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        if summary.normalized_tracking_no:
+            self._dashboard_service.delete(summary.tracking_no)
+        else:
+            self._work_report_service.soft_delete_row(
+                summary.latest_row_id,
+                resolution_note="대시보드에서 수주번호 미기재 행 삭제",
+            )
         self.refresh()
         self._refresh_final_preview()
         self._refresh_callback()

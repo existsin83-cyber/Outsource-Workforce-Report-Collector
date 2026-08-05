@@ -149,6 +149,11 @@ class TrackingDashboardService:
             raise ValueError("존재하지 않는 Tracking No.입니다.")
         return self._repository.resume_tracking(tracking_no)
 
+    def delete(self, tracking_no: str) -> None:
+        if not self.drill_down(tracking_no):
+            raise ValueError("존재하지 않는 Tracking No.입니다.")
+        self._repository.delete_tracking_operational_data(tracking_no)
+
     def drill_down(self, tracking_no: str) -> tuple[WorkReportRow, ...]:
         normalized = normalize_tracking_no(tracking_no)
         rows = [

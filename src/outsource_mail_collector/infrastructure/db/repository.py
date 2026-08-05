@@ -995,6 +995,121 @@ class SQLiteRepository:
             ).fetchone()
         return None if row is None else _tracking_work_status_from_row(row)
 
+    def delete_tracking_operational_data(self, tracking_no: str) -> None:
+        """Permanently remove one Tracking No.'s non-master operational data."""
+
+        normalized = normalize_tracking_no(tracking_no)
+        if not normalized:
+            return
+        with self.transaction():
+            with self._connect() as conn:
+                target_rows = [
+                    row
+                    for row in conn.execute(
+                        """
+                        SELECT row_id, extracted_record_id, mail_entry_id, tracking_no
+                        FROM work_report_rows
+                        """
+                    ).fetchall()
+                    if normalize_tracking_no(str(row["tracking_no"] or ""))
+                    == normalized
+                ]
+                target_row_ids = [int(row["row_id"]) for row in target_rows]
+                target_extract_ids = [
+                    int(row["extracted_record_id"])
+                    for row in target_rows
+                    if row["extracted_record_id"] is not None
+                ]
+                target_mail_ids = {
+                    str(row["mail_entry_id"])
+                    for row in target_rows
+                    if row["mail_entry_id"] is not None
+                }
+                snapshot_sources: dict[int, set[int]] = {}
+                for row in conn.execute(
+                    """
+                    SELECT snapshot_row_id, source_row_id
+                    FROM final_report_row_sources
+                    """
+                ).fetchall():
+                    snapshot_sources.setdefault(
+                        int(row["snapshot_row_id"]), set()
+                    ).add(int(row["source_row_id"]))
+                target_snapshot_rows = [
+                    row
+                    for row in conn.execute(
+                        """
+                        SELECT snapshot_row_id, report_id, tracking_no
+                        FROM final_report_rows
+                        """
+                    ).fetchall()
+                    if normalize_tracking_no(str(row["tracking_no"] or ""))
+                    == normalized
+                    or bool(
+                        snapshot_sources.get(int(row["snapshot_row_id"]), set())
+                        & set(target_row_ids)
+                    )
+                ]
+                target_snapshot_ids = [
+                    int(row["snapshot_row_id"]) for row in target_snapshot_rows
+                ]
+                candidate_report_ids = {
+                    int(row["report_id"]) for row in target_snapshot_rows
+                }
+                _delete_by_ids(
+                    conn, "final_report_rows", "snapshot_row_id", target_snapshot_ids
+                )
+                empty_report_ids = [
+                    report_id
+                    for report_id in candidate_report_ids
+                    if conn.execute(
+                        """
+                        SELECT 1 FROM final_report_rows WHERE report_id = ?
+                        """,
+                        (report_id,),
+                    ).fetchone()
+                    is None
+                ]
+                _delete_by_ids(conn, "final_reports", "report_id", empty_report_ids)
+                _delete_by_ids(conn, "work_report_rows", "row_id", target_row_ids)
+
+                orphan_extract_rows = _orphan_extracted_records(
+                    conn, target_extract_ids
+                )
+                target_mail_ids.update(
+                    str(row["mail_entry_id"])
+                    for row in orphan_extract_rows
+                    if row["mail_entry_id"] is not None
+                )
+                _delete_by_ids(
+                    conn,
+                    "extracted_records",
+                    "record_id",
+                    [int(row["record_id"]) for row in orphan_extract_rows],
+                )
+                _delete_orphan_processed_mails(conn, target_mail_ids)
+                conn.execute(
+                    """
+                    DELETE FROM cumulative_baselines
+                    WHERE normalized_tracking_no = ?
+                    """,
+                    (normalized,),
+                )
+                conn.execute(
+                    """
+                    DELETE FROM tracking_work_status
+                    WHERE normalized_tracking_no = ?
+                    """,
+                    (normalized,),
+                )
+                _delete_tracking_operational_action_logs(
+                    conn,
+                    normalized,
+                    target_row_ids,
+                    [int(row["record_id"]) for row in orphan_extract_rows],
+                    empty_report_ids,
+                )
+
     def _set_tracking_completion(
         self,
         tracking_no: str,
@@ -1944,6 +2059,106 @@ class SQLiteRepository:
             )
             for row in rows
         ]
+
+
+def _delete_by_ids(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    identifiers: list[int],
+) -> None:
+    if not identifiers:
+        return
+    placeholders = ", ".join("?" for _ in identifiers)
+    conn.execute(
+        f"DELETE FROM {table} WHERE {column} IN ({placeholders})", identifiers
+    )
+
+
+def _orphan_extracted_records(
+    conn: sqlite3.Connection, record_ids: list[int]
+) -> list[sqlite3.Row]:
+    if not record_ids:
+        return []
+    placeholders = ", ".join("?" for _ in record_ids)
+    return conn.execute(
+        f"""
+        SELECT er.record_id, er.mail_entry_id
+        FROM extracted_records AS er
+        WHERE er.record_id IN ({placeholders})
+          AND NOT EXISTS (
+              SELECT 1 FROM work_report_rows AS wr
+              WHERE wr.extracted_record_id = er.record_id
+          )
+        """,
+        record_ids,
+    ).fetchall()
+
+
+def _delete_orphan_processed_mails(
+    conn: sqlite3.Connection, mail_ids: set[str]
+) -> None:
+    if not mail_ids:
+        return
+    values = sorted(mail_ids)
+    placeholders = ", ".join("?" for _ in values)
+    conn.execute(
+        f"""
+        DELETE FROM processed_mails
+        WHERE mail_entry_id IN ({placeholders})
+          AND NOT EXISTS (
+              SELECT 1 FROM extracted_records AS er
+              WHERE er.mail_entry_id = processed_mails.mail_entry_id
+          )
+        """,
+        values,
+    )
+
+
+def _delete_tracking_operational_action_logs(
+    conn: sqlite3.Connection,
+    normalized_tracking_no: str,
+    row_ids: list[int],
+    extracted_record_ids: list[int],
+    report_ids: list[int],
+) -> None:
+    conn.execute(
+        """
+        DELETE FROM action_logs
+        WHERE entity_id = ?
+          AND action IN (
+              'CUMULATIVE_BASELINE_SAVED',
+              'TRACKING_START_DATE_SAVED',
+              'TRACKING_COMPLETED',
+              'TRACKING_RESUMED'
+          )
+        """,
+        (normalized_tracking_no,),
+    )
+    _delete_action_logs_for_entities(
+        conn, row_ids, "action LIKE '%WORK_REPORT%'"
+    )
+    _delete_action_logs_for_entities(
+        conn, extracted_record_ids, "action LIKE 'REVIEW%'"
+    )
+    _delete_action_logs_for_entities(
+        conn, report_ids, "action = 'FINAL_REPORT_COPIED'"
+    )
+
+
+def _delete_action_logs_for_entities(
+    conn: sqlite3.Connection, entity_ids: list[int], condition: str
+) -> None:
+    if not entity_ids:
+        return
+    placeholders = ", ".join("?" for _ in entity_ids)
+    conn.execute(
+        f"""
+        DELETE FROM action_logs
+        WHERE {condition} AND entity_id IN ({placeholders})
+        """,
+        [str(identifier) for identifier in entity_ids],
+    )
 
 
 _WORK_REPORT_SELECT = """

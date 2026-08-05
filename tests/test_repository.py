@@ -247,6 +247,95 @@ def test_failed_extraction_rolls_back_processed_mail(repository):
     assert not repository.is_mail_processed(mail.mail_id)
 
 
+def test_delete_tracking_operational_data_preserves_shared_mail_and_master_data(
+    repository,
+):
+    """Deleting one Tracking No. removes only its operational graph."""
+
+    target_tracking_no = " ab 260101 "
+    other_tracking_no = "CD260102"
+    repository.set_setting("outlook_folder", "Inbox")
+    employee = repository.save_employee(
+        None, "Operator", "operator@example.com", [], True
+    )
+    vendor = repository.save_vendor(None, "Vendor A", [], True)
+    target_mapping = repository.save_work_order_mapping(
+        None, target_tracking_no, "Equipment A", vendor.vendor_id, "WA", True
+    )
+    other_mapping = repository.save_work_order_mapping(
+        None, other_tracking_no, "Equipment B", vendor.vendor_id, "WA", False
+    )
+    repository.save_cumulative_baseline(
+        tracking_no=target_tracking_no,
+        effective_through_date=date(2026, 7, 28),
+        cumulative_man_day=Decimal("10.0"),
+        resolution_note="target baseline",
+    )
+    repository.save_cumulative_baseline(
+        tracking_no=other_tracking_no,
+        effective_through_date=date(2026, 7, 28),
+        cumulative_man_day=Decimal("20.0"),
+        resolution_note="other baseline",
+    )
+    repository.set_tracking_start_date(target_tracking_no, date(2026, 7, 29))
+    repository.set_tracking_start_date(other_tracking_no, date(2026, 7, 29))
+
+    shared_target, shared_other = _store_mail_report_rows(
+        repository,
+        "SHARED-MAIL",
+        [
+            ("shared-target", target_tracking_no),
+            ("shared-other", other_tracking_no),
+        ],
+    )
+    (target_only,) = _store_mail_report_rows(
+        repository, "TARGET-ONLY-MAIL", [("target-only", target_tracking_no)]
+    )
+    target_manual_values = _complete_report_values(date(2026, 7, 30))
+    target_manual_values["tracking_no"] = target_tracking_no
+    target_manual = repository.create_manual_report_row(**target_manual_values)
+    mixed_report = repository.create_final_report_snapshot(
+        date_from=date(2026, 7, 29),
+        date_to=date(2026, 7, 29),
+        rows=[shared_target, shared_other],
+        snapshot_hash="mixed",
+    )
+    target_report = repository.create_final_report_snapshot(
+        date_from=date(2026, 7, 29),
+        date_to=date(2026, 7, 30),
+        rows=[target_only, target_manual],
+        snapshot_hash="target-only",
+    )
+
+    repository.delete_tracking_operational_data(target_tracking_no)
+
+    assert repository.get_setting("outlook_folder") == "Inbox"
+    assert repository.list_employees() == [employee]
+    assert repository.list_work_order_mappings() == [target_mapping, other_mapping]
+    assert repository.get_cumulative_baseline(target_tracking_no) is None
+    assert repository.get_cumulative_baseline(other_tracking_no) is not None
+    assert repository.get_tracking_work_status(target_tracking_no) is None
+    assert repository.get_tracking_work_status(other_tracking_no) is not None
+    assert repository.is_mail_processed("SHARED-MAIL")
+    assert not repository.is_mail_processed("TARGET-ONLY-MAIL")
+    assert [row.row_id for row in repository.list_all_work_report_rows()] == [
+        shared_other.row_id
+    ]
+    assert [record.mail_entry_id for record in repository.list_review_records()] == [
+        "SHARED-MAIL"
+    ]
+    assert repository.get_final_report(mixed_report.report_id).rows[0].source_row_ids == (
+        shared_other.row_id,
+    )
+    with pytest.raises(KeyError):
+        repository.get_final_report(target_report.report_id)
+    assert all(
+        log.entity_id
+        not in {"AB260101", str(target_manual.row_id)}
+        for log in repository.list_action_logs()
+    )
+
+
 def test_review_update_and_status_change_write_action_logs(repository):
     mail = _mail_record()
     section = _section(mail.mail_id)
@@ -888,6 +977,49 @@ def _complete_report_values(work_date: date) -> dict[str, object]:
         included=True,
         resolution_note="확정",
     )
+
+
+def _store_mail_report_rows(
+    repository: SQLiteRepository,
+    mail_id: str,
+    records: list[tuple[str, str]],
+):
+    mail = _mail_record().model_copy(update={"mail_id": mail_id})
+    parsed_rows = []
+    for index, (suffix, tracking_no) in enumerate(records):
+        section = _section(mail_id).model_copy(
+            update={
+                "section_index": index,
+                "tracking_no": tracking_no,
+                "equipment_name": f"Equipment {index}",
+            }
+        )
+        record = _work_record().model_copy(
+            update={
+                "work_record_id": f"WORK-{suffix}",
+                "equipment_record_id": f"EQUIPMENT-{suffix}",
+            }
+        )
+        validation = ValidationResult(
+            work_record_id=record.work_record_id,
+            is_valid=True,
+            issues=[],
+            status=ReviewStatus.NORMAL,
+        )
+        parsed_rows.append((section, record, validation))
+    stored_records = repository.store_extraction(mail, parsed_rows)
+    rows = []
+    for stored, (_, tracking_no) in zip(stored_records, records, strict=True):
+        values = _complete_report_values(date(2026, 7, 29))
+        values["tracking_no"] = tracking_no
+        rows.append(
+            repository.get_or_create_mail_report_row(
+                extracted_record_id=stored.record_id,
+                mail_entry_id=mail_id,
+                **values,
+            )
+        )
+    return tuple(rows)
 
 
 def _create_legacy_work_report_db(db_path) -> None:

@@ -111,6 +111,27 @@ def test_completion_rejects_unknown_tracking_without_creating_status(tmp_path):
     assert repository.list_tracking_work_status() == []
 
 
+def test_delete_removes_existing_tracking_operational_data(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    _create_row(repository, tracking_no="AB260101")
+    service = _dashboard_service(repository)
+
+    service.delete(" ab 260101 ")
+
+    assert service.drill_down("AB260101") == ()
+
+
+def test_delete_rejects_unknown_tracking_without_creating_data(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    service = _dashboard_service(repository)
+
+    with pytest.raises(ValueError) as error:
+        service.delete("UNKNOWN")
+
+    assert str(error.value) == "\uc874\uc7ac\ud558\uc9c0 \uc54a\ub294 Tracking No.\uc785\ub2c8\ub2e4."
+    assert repository.list_tracking_work_status() == []
+
+
 def test_completion_uses_first_work_date_and_records_one_completion_action(
     tmp_path,
 ):
