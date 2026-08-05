@@ -303,6 +303,30 @@ _WORK_REPORT_UPDATE_FIELDS = {
     "included",
     "warning_confirmed",
 }
+# 재수집 시 어떤 필드를 다시 파싱값으로 덮어쓸지(_PARSE_REFRESH_FIELDS), 그리고
+# 그중 실제로 값이 달라졌는지 비교해 사용자 확정을 초기화할지 판단하는 부분
+# 집합(_PARSE_COMPARISON_FIELDS). included/confirmed_daily_man_day/
+# resolution_note 는 사용자 소유 상태이므로 여기 포함하지 않는다.
+_PARSE_COMPARISON_FIELDS = {
+    "work_date",
+    "vendor_name",
+    "tracking_no",
+    "equipment_name",
+    "business_team",
+    "actual_headcount",
+    "night_headcount",
+    "per_person_man_day",
+    "reported_daily_man_day",
+    "reported_cumulative_man_day",
+}
+_PARSE_REFRESH_FIELDS = _PARSE_COMPARISON_FIELDS | {
+    "work_date_confirmed",
+    "calculated_daily_man_day",
+    "calculated_cumulative_man_day",
+    "cumulative_series_key",
+    "issue_codes",
+    "review_status",
+}
 
 
 def default_db_path() -> Path:
@@ -1072,12 +1096,23 @@ class SQLiteRepository:
             tuple[EquipmentSection, OutsourceWorkRecord, ValidationResult]
         ],
     ) -> list[StoredReviewRecord]:
+        """Persist one mail's parse result, upserting on re-collection.
+
+        Re-importing the same mail (parser fix, user re-runs 메일 가져오기)
+        must refresh in place rather than duplicate or silently skip:
+        processed_mails/extracted_records upsert by their natural keys, and
+        any mail-derived work_report_row whose extracted record no longer
+        appears in this parse (e.g. section splitting changed) is soft-
+        deleted so it doesn't linger as a stale duplicate.
+        """
+
         if any(not record.work_record_id for _, record, _ in rows):
             raise ValueError("work_record_id는 필수입니다.")
 
         now = _utc_now()
         content_hash = hashlib.sha256(mail.body_text.encode("utf-8")).hexdigest()
-        try:
+        fresh_work_record_ids = {record.work_record_id for _, record, _ in rows}
+        with self.transaction():
             with self._connect() as conn:
                 conn.execute(
                     """
@@ -1088,6 +1123,20 @@ class SQLiteRepository:
                         date_issue_codes_json, work_date_confirmed
                     )
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(mail_entry_id) DO UPDATE SET
+                        subject = excluded.subject,
+                        sender_name = excluded.sender_name,
+                        sender_email = excluded.sender_email,
+                        received_at = excluded.received_at,
+                        report_date = excluded.report_date,
+                        content_hash = excluded.content_hash,
+                        status = excluded.status,
+                        processed_at = excluded.processed_at,
+                        subject_report_date = excluded.subject_report_date,
+                        body_report_date = excluded.body_report_date,
+                        report_date_source = excluded.report_date_source,
+                        date_issue_codes_json = excluded.date_issue_codes_json,
+                        work_date_confirmed = excluded.work_date_confirmed
                     """,
                     (
                         mail.mail_id,
@@ -1107,18 +1156,43 @@ class SQLiteRepository:
                     ),
                 )
                 record_ids = [
-                    self._insert_extracted_record(
+                    self._upsert_extracted_record(
                         conn, mail, section, record, validation, now
                     )
                     for section, record, validation in rows
                 ]
-        except sqlite3.IntegrityError as exc:
-            if self.is_mail_processed(mail.mail_id):
-                raise DuplicateEntityError("이미 처리된 메일입니다.") from exc
-            raise
+                self._soft_delete_stale_mail_rows(
+                    conn, mail.mail_id, fresh_work_record_ids
+                )
         return [self.get_review_record(record_id) for record_id in record_ids]
 
-    def _insert_extracted_record(
+    def _soft_delete_stale_mail_rows(
+        self,
+        conn: sqlite3.Connection,
+        mail_entry_id: str,
+        fresh_work_record_ids: set[str],
+    ) -> None:
+        stale = conn.execute(
+            """
+            SELECT wr.row_id FROM work_report_rows AS wr
+            JOIN extracted_records AS er ON er.record_id = wr.extracted_record_id
+            WHERE wr.mail_entry_id = ? AND wr.source_type = ?
+                AND wr.deleted_at IS NULL
+                AND er.work_record_id NOT IN ({placeholders})
+            """.format(
+                placeholders=",".join("?" * len(fresh_work_record_ids))
+                if fresh_work_record_ids
+                else "NULL"
+            ),
+            (mail_entry_id, RowSource.MAIL.value, *fresh_work_record_ids),
+        ).fetchall()
+        for row in stale:
+            self.soft_delete_work_report_row(
+                int(row["row_id"]),
+                resolution_note="메일 재수집으로 대체됨",
+            )
+
+    def _upsert_extracted_record(
         self,
         conn: sqlite3.Connection,
         mail: MailRecord,
@@ -1127,7 +1201,7 @@ class SQLiteRepository:
         validation: ValidationResult,
         now: str,
     ) -> int:
-        cursor = conn.execute(
+        conn.execute(
             """
             INSERT INTO extracted_records(
                 mail_entry_id, work_record_id, equipment_record_id,
@@ -1142,6 +1216,30 @@ class SQLiteRepository:
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?
             )
+            ON CONFLICT(work_record_id) DO UPDATE SET
+                equipment_record_id = excluded.equipment_record_id,
+                report_date = excluded.report_date,
+                sender_email = excluded.sender_email,
+                tracking_no = excluded.tracking_no,
+                order_no = excluded.order_no,
+                project_name = excluded.project_name,
+                equipment_name = excluded.equipment_name,
+                unit_no = excluded.unit_no,
+                business_team = excluded.business_team,
+                vendor_name = excluded.vendor_name,
+                actual_headcount = excluded.actual_headcount,
+                day_headcount = excluded.day_headcount,
+                night_headcount = excluded.night_headcount,
+                per_person_man_day = excluded.per_person_man_day,
+                day_man_day = excluded.day_man_day,
+                night_man_day = excluded.night_man_day,
+                daily_man_day = excluded.daily_man_day,
+                cumulative_man_day = excluded.cumulative_man_day,
+                note = excluded.note,
+                confidence = excluded.confidence,
+                review_status = excluded.review_status,
+                raw_section = excluded.raw_section,
+                updated_at = excluded.updated_at
             """,
             (
                 mail.mail_id,
@@ -1172,9 +1270,14 @@ class SQLiteRepository:
                 now,
             ),
         )
-        row_id = int(cursor.lastrowid)
+        # lastrowid is unreliable on an upsert's UPDATE path, so look the
+        # (possibly pre-existing) row up by its unique natural key instead.
+        row = conn.execute(
+            "SELECT record_id FROM extracted_records WHERE work_record_id = ?",
+            (record.work_record_id,),
+        ).fetchone()
         _invalidate_reports(conn)
-        return row_id
+        return int(row["record_id"])
 
     def list_review_records(
         self,
@@ -1278,8 +1381,19 @@ class SQLiteRepository:
         mail_entry_id: str,
         **values: Any,
     ) -> StoredWorkReportRow:
-        """Create one mail-derived row, idempotently by extracted record."""
+        """Create or refresh one mail-derived row, idempotently by extracted record.
 
+        Re-collecting the same mail (parser fix, user re-import) reaches this
+        with the same extracted_record_id every time, because
+        outsource_extractor now derives a deterministic work_record_id per
+        section+ordinal instead of a fresh uuid. So an existing row is
+        updated in place rather than left untouched: parse-derived fields
+        refresh, a soft-deleted row is restored, and confirmed_daily_man_day
+        resets only when the parsed values actually changed - user-owned
+        state (included, resolution_note, an unchanged confirmation) survives.
+        """
+
+        new_row_id: int | None = None
         with self._connect() as conn:
             existing = conn.execute(
                 f"""
@@ -1288,16 +1402,50 @@ class SQLiteRepository:
                 """,
                 (extracted_record_id, RowSource.MAIL.value),
             ).fetchone()
-            if existing is not None:
-                return _work_report_from_row(existing)
-            row_id = self._insert_work_report_row(
-                conn,
-                source_type=RowSource.MAIL,
-                extracted_record_id=extracted_record_id,
-                mail_entry_id=mail_entry_id,
-                values=values,
+            if existing is None:
+                new_row_id = self._insert_work_report_row(
+                    conn,
+                    source_type=RowSource.MAIL,
+                    extracted_record_id=extracted_record_id,
+                    mail_entry_id=mail_entry_id,
+                    values=values,
+                )
+            else:
+                current = _work_report_from_row(existing)
+        if new_row_id is not None:
+            return self.get_work_report_row(new_row_id)
+
+        parse_changed = any(
+            getattr(current, field_name) != values.get(field_name)
+            for field_name in _PARSE_COMPARISON_FIELDS
+        )
+        if not parse_changed:
+            # 파싱값이 그대로면 issue_codes/review_status 등 사용자가 이후
+            # 직접 바꿨을 수 있는 파생 상태를 되돌리지 않고 그대로 둔다
+            # (예: 중복 해결로 지운 DUPLICATE_UNRESOLVED가 재수집으로 되살아나면 안 됨).
+            if current.deleted_at is not None:
+                with self.transaction():
+                    self.restore_work_report_row(
+                        current.row_id, resolution_note="메일 재수집으로 복원됨"
+                    )
+            return self.get_work_report_row(current.row_id)
+
+        changes = {
+            field_name: values[field_name]
+            for field_name in _PARSE_REFRESH_FIELDS
+            if field_name in values
+        }
+        changes["confirmed_daily_man_day"] = None
+        changes["warning_confirmed"] = False
+        with self.transaction():
+            if current.deleted_at is not None:
+                self.restore_work_report_row(
+                    current.row_id, resolution_note="메일 재수집으로 복원됨"
+                )
+            self.update_work_report_row(
+                current.row_id, changes, resolution_note="메일 재수집: 파싱값 갱신"
             )
-        return self.get_work_report_row(row_id)
+        return self.get_work_report_row(current.row_id)
 
     def create_manual_report_row(self, **values: Any) -> StoredWorkReportRow:
         """Persist a user-entered exception row without Outlook identity."""
@@ -1398,15 +1546,10 @@ class SQLiteRepository:
         *,
         include_deleted: bool = False,
     ) -> list[StoredWorkReportRow]:
-        if include_deleted:
-            date_filter = (
-                "(wr.work_date BETWEEN ? AND ? "
-                "OR (wr.work_date IS NULL AND wr.deleted_at IS NOT NULL))"
-            )
-            deleted_filter = ""
-        else:
-            date_filter = "wr.work_date BETWEEN ? AND ?"
-            deleted_filter = "AND wr.deleted_at IS NULL"
+        # 작업일을 아직 확정하지 못한 행(work_date IS NULL)은 날짜 범위와 무관하게
+        # 항상 노출한다 - 그리드에서 "확인 필요"로 보여야 검토할 수 있다.
+        date_filter = "(wr.work_date BETWEEN ? AND ? OR wr.work_date IS NULL)"
+        deleted_filter = "" if include_deleted else "AND wr.deleted_at IS NULL"
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
@@ -1547,18 +1690,35 @@ class SQLiteRepository:
         row_id: int,
         *,
         confirmed_daily_man_day: Decimal,
-        confirmed_cumulative_man_day: Decimal,
+        confirmed_cumulative_man_day: Decimal | None = None,
         resolution_note: str,
     ) -> StoredWorkReportRow:
+        # 확정 누적은 더 이상 행 단위로 입력받지 않는다(수주 공수 대시보드 상단표에서
+        # Tracking No. 단위로 확정). None이면 컬럼을 그대로 두고 재계산이 채운다.
         if not resolution_note.strip():
             raise ValueError("확정 사유를 입력해 주세요.")
         before = self.get_work_report_row(row_id)
+        cumulative_assignment = (
+            ", confirmed_cumulative_man_day = ?"
+            if confirmed_cumulative_man_day is not None
+            else ""
+        )
+        params: list[Any] = [_decimal_to_db(confirmed_daily_man_day)]
+        if confirmed_cumulative_man_day is not None:
+            params.append(_decimal_to_db(confirmed_cumulative_man_day))
+        params.extend(
+            [
+                ReviewStatus.REVIEWED.value,
+                resolution_note.strip(),
+                _utc_now(),
+                row_id,
+            ]
+        )
         with self._connect() as conn:
             cursor = conn.execute(
-                """
+                f"""
                 UPDATE work_report_rows
-                SET confirmed_daily_man_day = ?,
-                    confirmed_cumulative_man_day = ?,
+                SET confirmed_daily_man_day = ?{cumulative_assignment},
                     warning_confirmed = 1,
                     work_date_confirmed = 1,
                     review_status = ?,
@@ -1566,14 +1726,7 @@ class SQLiteRepository:
                     updated_at = ?
                 WHERE row_id = ?
                 """,
-                (
-                    _decimal_to_db(confirmed_daily_man_day),
-                    _decimal_to_db(confirmed_cumulative_man_day),
-                    ReviewStatus.REVIEWED.value,
-                    resolution_note.strip(),
-                    _utc_now(),
-                    row_id,
-                ),
+                params,
             )
             if cursor.rowcount == 0:
                 raise KeyError(row_id)
@@ -1588,8 +1741,10 @@ class SQLiteRepository:
                         "confirmed_daily_man_day": str(
                             confirmed_daily_man_day
                         ),
-                        "confirmed_cumulative_man_day": str(
-                            confirmed_cumulative_man_day
+                        "confirmed_cumulative_man_day": (
+                            str(confirmed_cumulative_man_day)
+                            if confirmed_cumulative_man_day is not None
+                            else None
                         ),
                     },
                     ensure_ascii=False,

@@ -199,7 +199,10 @@ def test_duplicate_active_work_order_tracking_is_rejected(repository):
         )
 
 
-def test_store_extraction_is_atomic_and_deduplicates_entry_id(repository):
+def test_store_extraction_refreshes_in_place_on_recollection(repository):
+    """Re-collecting the same mail (re-import, parser fix) must update the
+    existing extracted record in place, not duplicate it or raise."""
+
     mail = _mail_record()
     section = _section(mail.mail_id)
     record = _work_record()
@@ -214,13 +217,15 @@ def test_store_extraction_is_atomic_and_deduplicates_entry_id(repository):
 
     assert repository.is_mail_processed(mail.mail_id)
     assert len(stored) == 1
+    first_record_id = stored[0].record_id
     assert stored[0].mail_entry_id == mail.mail_id
     assert stored[0].equipment_name == "ABC-200 #2"
     assert stored[0].review_status is ReviewStatus.NORMAL
 
-    with pytest.raises(DuplicateEntityError):
-        repository.store_extraction(mail, [(section, record, validation)])
+    resynced = repository.store_extraction(mail, [(section, record, validation)])
 
+    assert len(resynced) == 1
+    assert resynced[0].record_id == first_record_id
     assert len(repository.list_review_records(date(2026, 7, 24))) == 1
 
 
@@ -635,6 +640,101 @@ def test_work_report_rows_round_trip_decimal_values_and_allow_duplicates(
         resolution_note="야근 인원 확인",
     )
     assert updated.night_headcount == 0
+
+
+def test_reparsing_unchanged_mail_row_preserves_user_state(repository):
+    """Re-collecting a mail with identical parsed values must not touch the
+    row's user-owned state (confirmation, inclusion, resolution note)."""
+
+    common = dict(
+        work_date=date(2026, 7, 29),
+        work_date_confirmed=True,
+        vendor_name="업체A",
+        tracking_no="AB260101",
+        equipment_name="장비 1",
+        business_team="WA",
+        actual_headcount=2,
+        night_headcount=1,
+        per_person_man_day=Decimal("1.5"),
+        reported_daily_man_day=Decimal("4.0"),
+        calculated_daily_man_day=Decimal("4.0"),
+        confirmed_daily_man_day=None,
+        reported_cumulative_man_day=Decimal("20.0"),
+        calculated_cumulative_man_day=Decimal("20.0"),
+        confirmed_cumulative_man_day=None,
+        cumulative_series_key="업체a|T:AB260101",
+        issue_codes=(),
+        review_status=ReviewStatus.NORMAL,
+        included=True,
+        resolution_note=None,
+    )
+    created = repository.get_or_create_mail_report_row(
+        extracted_record_id=1, mail_entry_id="ENTRY-A", **common
+    )
+    confirmed = repository.confirm_work_report_row(
+        created.row_id,
+        confirmed_daily_man_day=Decimal("4.0"),
+        resolution_note="당일 공수 확정",
+    )
+    excluded = repository.update_work_report_row(
+        confirmed.row_id, {"included": False}, resolution_note="제외 처리"
+    )
+    assert excluded.included is False
+
+    resynced = repository.get_or_create_mail_report_row(
+        extracted_record_id=1, mail_entry_id="ENTRY-A", **common
+    )
+
+    assert resynced.confirmed_daily_man_day == Decimal("4.0")
+    assert resynced.included is False
+    assert resynced.resolution_note == "제외 처리"
+
+
+def test_reparsing_changed_mail_row_resets_confirmation(repository):
+    """A mail body edit that changes parsed values must reset the daily
+    confirmation so the user re-reviews the row instead of trusting a
+    confirmation that no longer matches the mail."""
+
+    common = dict(
+        work_date=date(2026, 7, 29),
+        work_date_confirmed=True,
+        vendor_name="업체A",
+        tracking_no="AB260101",
+        equipment_name="장비 1",
+        business_team="WA",
+        actual_headcount=2,
+        night_headcount=1,
+        per_person_man_day=Decimal("1.5"),
+        reported_daily_man_day=Decimal("4.0"),
+        calculated_daily_man_day=Decimal("4.0"),
+        confirmed_daily_man_day=None,
+        reported_cumulative_man_day=Decimal("20.0"),
+        calculated_cumulative_man_day=Decimal("20.0"),
+        confirmed_cumulative_man_day=None,
+        cumulative_series_key="업체a|T:AB260101",
+        issue_codes=(),
+        review_status=ReviewStatus.NORMAL,
+        included=True,
+        resolution_note=None,
+    )
+    created = repository.get_or_create_mail_report_row(
+        extracted_record_id=1, mail_entry_id="ENTRY-A", **common
+    )
+    repository.confirm_work_report_row(
+        created.row_id,
+        confirmed_daily_man_day=Decimal("4.0"),
+        resolution_note="당일 공수 확정",
+    )
+
+    changed = dict(common, reported_daily_man_day=Decimal("5.0"))
+    resynced = repository.get_or_create_mail_report_row(
+        extracted_record_id=1, mail_entry_id="ENTRY-A", **changed
+    )
+
+    assert resynced.row_id == created.row_id
+    assert resynced.reported_daily_man_day == Decimal("5.0")
+    assert resynced.confirmed_daily_man_day is None
+    assert resynced.warning_confirmed is False
 
 
 def test_confirmation_and_snapshot_are_audited_and_immutable(repository):

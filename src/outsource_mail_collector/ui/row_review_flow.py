@@ -45,11 +45,6 @@ def review_single_row(
             row.reported_daily_man_day,
             row.calculated_daily_man_day,
         ),
-        "confirmed_cumulative": _confirmed_candidate(
-            row.confirmed_cumulative_man_day,
-            row.reported_cumulative_man_day,
-            row.calculated_cumulative_man_day,
-        ),
         "issue_codes": row.issue_codes,
         "parent": parent,
     }
@@ -88,7 +83,6 @@ def review_single_row(
         work_report_service.confirm_row(
             row.row_id,
             confirmed_daily_man_day=values["confirmed_daily_man_day"],
-            confirmed_cumulative_man_day=values["confirmed_cumulative_man_day"],
             resolution_note=resolution_note,
         )
     except ValueError as exc:

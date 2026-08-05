@@ -28,25 +28,26 @@ class ExtractionOrchestrator:
         self._repository = repository
 
     def process(self, mails: Iterable[MailRecord]) -> ExtractionResult:
-        """Parse new messages, returning stored rows for both new and skipped mail."""
+        """Parse every message and refresh its stored rows in place.
+
+        Re-collecting an already-processed mail (parser fix, user re-runs
+        메일 가져오기) always re-parses rather than skipping - store_extraction
+        upserts by mail_entry_id/work_record_id, so this is idempotent when
+        nothing actually changed. skipped_mail_ids tracks which mails were
+        already processed before this call, purely for reporting ("N건 갱신").
+        """
 
         review_records: list[ReviewRecord] = []
-        skipped: list[str] = []
+        refreshed: list[str] = []
         errors: list[CollectionError] = []
         vendor_aliases = self._vendor_alias_map()
 
         for mail in mails:
-            if self._repository.is_mail_processed(mail.mail_id):
-                skipped.append(mail.mail_id)
-                review_records.extend(
-                    review_record_from_stored(row)
-                    for row in self._repository.list_review_records(
-                        mail_entry_id=mail.mail_id
-                    )
-                )
-                continue
+            already_processed = self._repository.is_mail_processed(mail.mail_id)
             try:
                 stored = self._process_one(mail, vendor_aliases)
+                if already_processed:
+                    refreshed.append(mail.mail_id)
                 review_records.extend(
                     review_record_from_stored(row) for row in stored
                 )
@@ -61,7 +62,7 @@ class ExtractionOrchestrator:
 
         return ExtractionResult(
             records=tuple(review_records),
-            skipped_mail_ids=tuple(skipped),
+            skipped_mail_ids=tuple(refreshed),
             errors=tuple(errors),
         )
 

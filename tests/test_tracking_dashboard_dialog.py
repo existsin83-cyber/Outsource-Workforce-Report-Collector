@@ -67,6 +67,7 @@ def test_dashboard_renders_summary_drill_down_and_blocking_guidance():
         for column in range(dialog.summary_table.columnCount())
     ]
     assert summary_headers == [
+        "행 번호",
         "Tracking No.",
         "최근 작업일",
         "거래처명",
@@ -82,13 +83,22 @@ def test_dashboard_renders_summary_drill_down_and_blocking_guidance():
         "확정 누적",
         "검증 상태",
     ]
-    assert dialog.summary_table.item(0, 0).text() == "AB260101"
-    assert dialog.summary_table.item(0, 13).text() == "확인 필요"
+    assert dialog.summary_table.item(0, 0).text() == "1"
+    assert (
+        dialog.summary_table.item(0, dialog_module._TRACKING_COLUMN).text()
+        == "AB260101"
+    )
+    assert (
+        dialog.summary_table.item(0, dialog_module._STATUS_COLUMN).text()
+        == "확인 필요"
+    )
     # 클릭 전에는 아무 강조도 없이 차단(blocker) 배경색만 보인다. 하단 상세표는
     # 그래도 첫 Tracking No. 기준으로 미리 채워져 있어야 한다.
     assert not dialog.summary_table.selectionModel().hasSelection()
     assert (
-        dialog.summary_table.item(0, 0).background().color()
+        dialog.summary_table.item(0, dialog_module._TRACKING_COLUMN)
+        .background()
+        .color()
         == QColor("#ffebee")
     )
     assert dashboard_service.drill_down_calls == ["AB260101"]
@@ -112,7 +122,9 @@ def test_dashboard_renders_summary_drill_down_and_blocking_guidance():
     # 두 번 조회된다.
     assert dialog.summary_table.selectionModel().hasSelection()
     assert (
-        dialog.summary_table.item(0, 0).background().color()
+        dialog.summary_table.item(0, dialog_module._TRACKING_COLUMN)
+        .background()
+        .color()
         == QColor("#1565c0")
     )
     assert dashboard_service.drill_down_calls == ["AB260101", "AB260101"]
@@ -140,7 +152,7 @@ def test_unregistered_summary_register_button_passes_summary_and_refreshes_views
         work_order_registration_callback=lambda value: requested.append(value) or True,
     )
 
-    button = dialog.summary_table.cellWidget(0, 13)
+    button = dialog.summary_table.cellWidget(0, dialog_module._STATUS_COLUMN)
     assert button is not None
     assert "background:#b71c1c" in button.styleSheet()
     assert "color:white" in button.styleSheet()
@@ -173,10 +185,10 @@ def test_successful_registration_refresh_removes_stale_status_button():
     )
 
     dashboard_service._summaries = (resolved,)
-    dialog.summary_table.cellWidget(0, 13).click()
+    dialog.summary_table.cellWidget(0, dialog_module._STATUS_COLUMN).click()
 
-    assert dialog.summary_table.item(0, 13).text() == "확정 가능"
-    assert dialog.summary_table.cellWidget(0, 13) is None
+    assert dialog.summary_table.item(0, dialog_module._STATUS_COLUMN).text() == "확정 가능"
+    assert dialog.summary_table.cellWidget(0, dialog_module._STATUS_COLUMN) is None
 
 
 def test_successful_registration_refreshes_selected_detail_and_guidance():
@@ -209,7 +221,7 @@ def test_successful_registration_refreshes_selected_detail_and_guidance():
     assert "수주 마스터 등록 필요" in dialog.guidance_label.text()
     dashboard_service._summaries = (_summary(),)
     dashboard_service._details = (resolved_detail,)
-    dialog.summary_table.cellWidget(0, 13).click()
+    dialog.summary_table.cellWidget(0, dialog_module._STATUS_COLUMN).click()
 
     assert dialog.detail_table.item(0, 2).text() == "4"
     assert dialog.detail_table.item(0, 10).text() == "검토 완료"
@@ -229,7 +241,7 @@ def test_dashboard_registration_button_ignores_nonmatching_blockers_and_cancelle
         lambda: None,
         work_order_registration_callback=lambda _: True,
     )
-    assert dialog.summary_table.cellWidget(0, 13) is None
+    assert dialog.summary_table.cellWidget(0, dialog_module._STATUS_COLUMN) is None
 
     cancelled_summary = _summary(
         blockers=(
@@ -246,7 +258,7 @@ def test_dashboard_registration_button_ignores_nonmatching_blockers_and_cancelle
         lambda: refreshed.append(True),
         work_order_registration_callback=lambda _: False,
     )
-    dialog.summary_table.cellWidget(0, 13).click()
+    dialog.summary_table.cellWidget(0, dialog_module._STATUS_COLUMN).click()
 
     assert dashboard_service.summary_calls == 1
     assert refreshed == []
@@ -261,13 +273,15 @@ def test_dashboard_tables_copy_selected_cells_as_tsv_and_ignore_empty_selection(
         lambda: None,
     )
     table = dialog.summary_table
+    tracking_col = dialog_module._TRACKING_COLUMN
+    date_col = tracking_col + 1
     table.clearSelection()
     table.selectionModel().select(
-        table.model().index(0, 0),
+        table.model().index(0, tracking_col),
         table.selectionModel().SelectionFlag.Select,
     )
     table.selectionModel().select(
-        table.model().index(0, 1),
+        table.model().index(0, date_col),
         table.selectionModel().SelectionFlag.Select,
     )
     table.setFocus()
@@ -293,14 +307,16 @@ def test_dashboard_table_context_menu_copies_selected_cells_as_tsv():
     )
     dialog.show()
     table = dialog.summary_table
-    _select_cells(table, ((0, 0), (0, 1)))
+    tracking_col = dialog_module._TRACKING_COLUMN
+    date_col = tracking_col + 1
+    _select_cells(table, ((0, tracking_col), (0, date_col)))
     QApplication.clipboard().setText("")
 
     QTest.mouseClick(
         table.viewport(),
         Qt.MouseButton.RightButton,
         Qt.KeyboardModifier.NoModifier,
-        table.visualItemRect(table.item(0, 0)).center(),
+        table.visualItemRect(table.item(0, tracking_col)).center(),
     )
     QApplication.processEvents()
 
@@ -413,7 +429,6 @@ def test_detail_row_double_click_opens_edit_flow_and_refreshes(monkeypatch):
         def values(self):
             return {
                 "confirmed_daily_man_day": Decimal("3.5"),
-                "confirmed_cumulative_man_day": Decimal("10.0"),
                 "resolution_note": "대시보드에서 확인",
             }
 
@@ -425,7 +440,7 @@ def test_detail_row_double_click_opens_edit_flow_and_refreshes(monkeypatch):
 
     assert opened_rows
     assert work_report_service.confirm_calls == [
-        (7, Decimal("3.5"), Decimal("10.0"), "대시보드에서 확인")
+        (7, Decimal("3.5"), "대시보드에서 확인")
     ]
     assert dashboard_service.summary_calls >= 2
     assert refresh_calls
@@ -456,7 +471,6 @@ def test_detail_row_edit_button_uses_current_row_selection(monkeypatch):
         def values(self):
             return {
                 "confirmed_daily_man_day": Decimal("3.5"),
-                "confirmed_cumulative_man_day": Decimal("10.0"),
                 "resolution_note": "확인",
             }
 
@@ -742,6 +756,48 @@ def test_initial_cumulative_cell_double_click_opens_baseline_editor(monkeypatch)
     dialog.close()
 
 
+def test_confirmed_cumulative_cell_double_click_opens_confirm_dialog_and_saves(
+    monkeypatch,
+):
+    """확정 누적 셀만 확정 누적 확인 창을 열고, 값을 서비스로 넘겨야 한다."""
+    _app()
+    work_report_service = _WorkReportService()
+    dialog = TrackingDashboardDialog(
+        _DashboardService(summaries=(_summary(),), details=(_row(7),)),
+        work_report_service,
+        lambda: None,
+    )
+    dialog.summary_table.selectRow(0)
+
+    class FakeCumulativeConfirmDialog:
+        DialogCode = QDialog.DialogCode
+
+        def __init__(self, tracking_no, **_kwargs):
+            self.tracking_no = tracking_no
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def values(self):
+            return {
+                "confirmed_cumulative_man_day": Decimal("13.0"),
+                "resolution_note": "메일값 채택",
+            }
+
+    monkeypatch.setattr(
+        dialog_module, "CumulativeConfirmDialog", FakeCumulativeConfirmDialog
+    )
+
+    dialog.summary_table.cellDoubleClicked.emit(
+        0, dialog_module._CONFIRMED_CUMULATIVE_COLUMN
+    )
+
+    assert work_report_service.confirm_series_cumulative_calls == [
+        ("AB260101", Decimal("13.0"), "메일값 채택")
+    ]
+    dialog.close()
+
+
 def test_baseline_values_require_reason_and_one_decimal():
     _app()
     dialog = BaselineDialog(
@@ -980,7 +1036,8 @@ class _WorkReportService:
     def __init__(self):
         self.saved: list[dict] = []
         self.update_calls: list[tuple[int, dict, str]] = []
-        self.confirm_calls: list[tuple[int, Decimal, Decimal, str]] = []
+        self.confirm_calls: list[tuple[int, Decimal, str]] = []
+        self.confirm_series_cumulative_calls: list[tuple[str, Decimal, str]] = []
 
     def get_cumulative_baseline(self, tracking_no):
         return None
@@ -998,23 +1055,29 @@ class _WorkReportService:
         row_id,
         *,
         confirmed_daily_man_day,
-        confirmed_cumulative_man_day,
         resolution_note,
     ):
         self.confirm_calls.append(
-            (
-                row_id,
-                confirmed_daily_man_day,
-                confirmed_cumulative_man_day,
-                resolution_note,
-            )
+            (row_id, confirmed_daily_man_day, resolution_note)
+        )
+        return SimpleNamespace()
+
+    def confirm_series_cumulative(
+        self,
+        tracking_no,
+        *,
+        confirmed_cumulative_man_day,
+        resolution_note,
+    ):
+        self.confirm_series_cumulative_calls.append(
+            (tracking_no, confirmed_cumulative_man_day, resolution_note)
         )
         return SimpleNamespace()
 
 
 def _visible_tracking_nos(dialog: TrackingDashboardDialog) -> list[str]:
     return [
-        dialog.summary_table.item(row, 0).text()
+        dialog.summary_table.item(row, dialog_module._TRACKING_COLUMN).text()
         for row in range(dialog.summary_table.rowCount())
     ]
 

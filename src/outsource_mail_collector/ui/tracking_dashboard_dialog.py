@@ -51,6 +51,7 @@ from outsource_mail_collector.ui.work_report_guidance import (
 
 
 _SUMMARY_HEADERS = (
+    "행 번호",
     "Tracking No.",
     "최근 작업일",
     "거래처명",
@@ -80,7 +81,10 @@ _DETAIL_HEADERS = (
     "검토 상태",
     "문제 및 조치",
 )
+_TRACKING_COLUMN = _SUMMARY_HEADERS.index("Tracking No.")
+_STATUS_COLUMN = _SUMMARY_HEADERS.index("검증 상태")
 _INITIAL_CUMULATIVE_COLUMN = _SUMMARY_HEADERS.index("초기 누적")
+_CONFIRMED_CUMULATIVE_COLUMN = _SUMMARY_HEADERS.index("확정 누적")
 _BLOCKING_BACKGROUND = QColor("#ffebee")
 _BLOCKING_FOREGROUND = QColor("#7f0000")
 _CURRENT_ROW_BACKGROUND = QColor("#1565c0")
@@ -169,6 +173,86 @@ class BaselineDialog(QDialog):
         self.accept()
 
 
+class CumulativeConfirmDialog(QDialog):
+    """Confirm one Tracking No.'s cumulative man-day (메일 누적 vs 계산 누적)."""
+
+    def __init__(
+        self,
+        tracking_no: str,
+        *,
+        reported_cumulative: Decimal | None,
+        calculated_cumulative: Decimal | None,
+        confirmed_cumulative: Decimal | None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("확정 누적 확인")
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        form.addRow("Tracking No.", QLabel(tracking_no))
+        self.reported_label = QLabel(_decimal_text(reported_cumulative) or "없음")
+        self.calculated_label = QLabel(_decimal_text(calculated_cumulative) or "없음")
+        form.addRow("메일 누적", self.reported_label)
+        form.addRow("계산 누적", self.calculated_label)
+        self.confirmed_edit = QLineEdit(
+            _decimal_text(confirmed_cumulative)
+            or _decimal_text(calculated_cumulative)
+        )
+        form.addRow("확정 누적", self.confirmed_edit)
+        choice_layout = QHBoxLayout()
+        mail_button = QPushButton("메일값 채택")
+        calculated_button = QPushButton("계산값 채택")
+        mail_button.clicked.connect(
+            lambda: self._adopt(reported_cumulative)
+        )
+        calculated_button.clicked.connect(
+            lambda: self._adopt(calculated_cumulative)
+        )
+        choice_layout.addWidget(mail_button)
+        choice_layout.addWidget(calculated_button)
+        form.addRow("불일치 빠른 선택", choice_layout)
+        self.reason_edit = QLineEdit()
+        self.reason_edit.setPlaceholderText("확정 근거 또는 확인 내용을 입력해 주세요.")
+        form.addRow("확인 사유", self.reason_edit)
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText("확정값 저장")
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _adopt(self, value: Decimal | None) -> None:
+        if value is not None:
+            self.confirmed_edit.setText(_decimal_text(value))
+
+    def values(self) -> dict[str, object]:
+        text = self.confirmed_edit.text().strip()
+        try:
+            confirmed = Decimal(text)
+        except InvalidOperation as exc:
+            raise ValueError("확정 누적을 숫자로 입력해 주세요.") from exc
+        if not confirmed.is_finite() or confirmed < 0:
+            raise ValueError("확정 누적은 0 이상의 숫자여야 합니다.")
+        reason = self.reason_edit.text().strip()
+        if not reason:
+            raise ValueError("확인 사유를 입력해 주세요.")
+        return {
+            "confirmed_cumulative_man_day": confirmed.quantize(Decimal("0.1")),
+            "resolution_note": reason,
+        }
+
+    def _accept(self) -> None:
+        try:
+            self.values()
+        except ValueError as exc:
+            QMessageBox.warning(self, "확정 누적 확인", str(exc))
+            return
+        self.accept()
+
+
 class TrackingDashboardDialog(QDialog):
     """Read projections and route baseline mutations through application services."""
 
@@ -199,6 +283,7 @@ class TrackingDashboardDialog(QDialog):
         self._summary_blocked: list[bool] = []
         self._detail_blocked: list[bool] = []
         self._active_target: str | None = None
+        self._summary_edit_column: int = _INITIAL_CUMULATIVE_COLUMN
         self.setWindowTitle(
             "완료 장비 목록" if completed_only else "수주 공수 대시보드"
         )
@@ -229,12 +314,20 @@ class TrackingDashboardDialog(QDialog):
         self.summary_table.cellDoubleClicked.connect(
             self._handle_summary_double_click
         )
+        self.summary_table.cellClicked.connect(self._handle_summary_click)
         self.summary_table.horizontalHeaderItem(
             _INITIAL_CUMULATIVE_COLUMN
         ).setToolTip(
             "초기 누적: 이 프로그램 사용 전에 이미 쌓여 있던 누적 공수입니다. "
             "기본값은 0이며, 셀을 더블클릭하거나 행을 선택 후 '선택 행 수정' "
             "버튼으로 수정할 수 있습니다."
+        )
+        self.summary_table.horizontalHeaderItem(
+            _CONFIRMED_CUMULATIVE_COLUMN
+        ).setToolTip(
+            "확정 누적: 메일 누적과 계산 누적을 비교해 Excel에 반영할 누적 "
+            "공수를 이 Tracking No.의 최신 행에 확정합니다. 셀을 더블클릭하거나 "
+            "행을 선택 후 '선택 행 수정' 버튼으로 수정할 수 있습니다."
         )
         # 등록 건수가 늘어도 두 표가 서로를 짓누르지 않도록 사용자가 비율을 잡게 한다.
         self.split = QSplitter(Qt.Orientation.Vertical)
@@ -321,13 +414,18 @@ class TrackingDashboardDialog(QDialog):
         try:
             self.summary_table.clearSelection()
             for row_index in range(self.summary_table.rowCount()):
-                status_widget = self.summary_table.cellWidget(row_index, 13)
+                status_widget = self.summary_table.cellWidget(
+                    row_index, _STATUS_COLUMN
+                )
                 if status_widget is not None:
-                    self.summary_table.removeCellWidget(row_index, 13)
+                    self.summary_table.removeCellWidget(
+                        row_index, _STATUS_COLUMN
+                    )
                     status_widget.deleteLater()
             self.summary_table.setRowCount(len(self._summaries))
             for row_index, summary in enumerate(self._summaries):
                 values = (
+                    str(row_index + 1),
                     summary.tracking_no,
                     _date_text(summary.latest_work_date),
                     summary.vendor_name or "",
@@ -371,8 +469,10 @@ class TrackingDashboardDialog(QDialog):
                     button.clicked.connect(
                         lambda _checked=False, current=summary: self._request_work_order_registration(current)
                     )
-                    self.summary_table.setCellWidget(row_index, 13, button)
-                self.summary_table.item(row_index, 0).setData(
+                    self.summary_table.setCellWidget(
+                        row_index, _STATUS_COLUMN, button
+                    )
+                self.summary_table.item(row_index, _TRACKING_COLUMN).setData(
                     Qt.ItemDataRole.UserRole, summary.normalized_tracking_no
                 )
                 if selected == summary.normalized_tracking_no:
@@ -407,11 +507,19 @@ class TrackingDashboardDialog(QDialog):
             self._active_target = "detail"
         self._repaint_detail_rows()
 
+    def _handle_summary_click(self, _row: int, column: int) -> None:
+        if column in (_INITIAL_CUMULATIVE_COLUMN, _CONFIRMED_CUMULATIVE_COLUMN):
+            self._summary_edit_column = column
+
     def _handle_summary_double_click(self, _row: int, column: int) -> None:
-        if column != _INITIAL_CUMULATIVE_COLUMN:
-            return
-        self._active_target = "summary"
-        self._edit_baseline()
+        if column == _INITIAL_CUMULATIVE_COLUMN:
+            self._active_target = "summary"
+            self._summary_edit_column = column
+            self._edit_baseline()
+        elif column == _CONFIRMED_CUMULATIVE_COLUMN:
+            self._active_target = "summary"
+            self._summary_edit_column = column
+            self._edit_confirmed_cumulative()
 
     def _handle_detail_double_click(self, row: int, _column: int) -> None:
         self._active_target = "detail"
@@ -424,10 +532,15 @@ class TrackingDashboardDialog(QDialog):
     def _update_edit_button_labels(self) -> None:
         if self._active_target == "summary":
             summary = self._selected_summary()
+            label = (
+                "확정 누적"
+                if self._summary_edit_column == _CONFIRMED_CUMULATIVE_COLUMN
+                else "초기 누적"
+            )
             self.edit_button.setText(
-                "선택 행 수정 (초기 누적)"
+                f"선택 행 수정 ({label})"
                 if summary is None
-                else f"선택 행 수정 (초기 누적) — {summary.tracking_no}"
+                else f"선택 행 수정 ({label}) — {summary.tracking_no}"
             )
             return
         if self._active_target == "detail":
@@ -443,7 +556,10 @@ class TrackingDashboardDialog(QDialog):
 
     def _edit_selected(self) -> None:
         if self._active_target == "summary":
-            self._edit_baseline()
+            if self._summary_edit_column == _CONFIRMED_CUMULATIVE_COLUMN:
+                self._edit_confirmed_cumulative()
+            else:
+                self._edit_baseline()
             return
         if self._active_target == "detail":
             self._edit_detail_row(self.detail_table.currentRow())
@@ -456,7 +572,7 @@ class TrackingDashboardDialog(QDialog):
         row = self.summary_table.currentRow()
         if row < 0:
             return None
-        item = self.summary_table.item(row, 0)
+        item = self.summary_table.item(row, _TRACKING_COLUMN)
         if item is None:
             return None
         return str(item.data(Qt.ItemDataRole.UserRole) or item.text())
@@ -686,6 +802,33 @@ class TrackingDashboardDialog(QDialog):
         self._refresh_final_preview()
         self._refresh_callback()
 
+    def _edit_confirmed_cumulative(self) -> None:
+        summary = self._selected_summary()
+        if summary is None:
+            QMessageBox.information(
+                self, "Tracking No. 선택", "확정 누적을 설정할 항목을 선택해 주세요."
+            )
+            return
+        dialog = CumulativeConfirmDialog(
+            summary.tracking_no,
+            reported_cumulative=summary.latest_reported_cumulative_man_day,
+            calculated_cumulative=summary.latest_calculated_cumulative_man_day,
+            confirmed_cumulative=summary.latest_confirmed_cumulative_man_day,
+            parent=self,
+        )
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        try:
+            self._work_report_service.confirm_series_cumulative(
+                summary.tracking_no, **dialog.values()
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "확정 누적 저장 실패", str(exc))
+            return
+        self.refresh()
+        self._refresh_final_preview()
+        self._refresh_callback()
+
     def _refresh_final_preview(self) -> None:
         if (
             self.final_preview_view is not None
@@ -724,6 +867,13 @@ def _table(headers: tuple[str, ...]) -> QTableWidget:
     table.horizontalHeader().setMaximumSectionSize(260)
     table.setHorizontalScrollMode(
         QAbstractItemView.ScrollMode.ScrollPerPixel
+    )
+    # ponytail: _paint_current_row resets non-current rows to QBrush() (palette
+    # default), which is near-black in dark mode - give the Qt selection state
+    # its own readable colors instead of relying on the palette.
+    table.setStyleSheet(
+        "QTableWidget::item:selected {background:#1565c0;color:#ffffff;}"
+        "QTableWidget::item:selected:!active {background:#90caf9;color:#1a1a1a;}"
     )
     return table
 

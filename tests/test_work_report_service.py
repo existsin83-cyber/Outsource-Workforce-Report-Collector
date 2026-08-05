@@ -279,6 +279,45 @@ def test_same_date_tracking_rows_are_valid_aggregate_contributors(tmp_path):
     )
 
 
+def test_duplicate_groups_finds_matching_rows_without_mutating_them(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    service = _work_report_service(repository)
+    first = _add_manual_daily(service, date(2026, 7, 30), Decimal("3.0"))
+    second = service.add_manual_row(
+        work_date=date(2026, 7, 30),
+        vendor_name="업체A",
+        tracking_no="AB260101",
+        equipment_name="장비 1",
+        business_team="WA",
+        actual_headcount=3,
+        night_headcount=0,
+        reported_daily_man_day=Decimal("3.0"),
+        reported_cumulative_man_day=None,
+        resolution_note="같은 조합의 다른 보고",
+    )
+
+    groups = service.duplicate_groups()
+
+    assert len(groups) == 1
+    assert {row.row_id for row in groups[0]} == {first.row_id, second.row_id}
+    # 조회만으로는 DUPLICATE_UNRESOLVED 같은 표시가 붙지 않아야 한다
+    # (그건 _mark_unresolved_duplicates 가 별도로 하는 일).
+    assert WorkReportIssueCode.DUPLICATE_UNRESOLVED not in (
+        repository.get_work_report_row(first.row_id).issue_codes
+    )
+    assert WorkReportIssueCode.DUPLICATE_UNRESOLVED not in (
+        repository.get_work_report_row(second.row_id).issue_codes
+    )
+
+
+def test_duplicate_groups_ignores_excluded_and_singleton_rows(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    service = _work_report_service(repository)
+    _add_manual_daily(service, date(2026, 7, 30), Decimal("3.0"))
+
+    assert service.duplicate_groups() == []
+
+
 def test_preexisting_duplicate_evidence_is_kept_for_user_resolution(tmp_path):
     repository = SQLiteRepository(tmp_path / "collector.db")
     service = _work_report_service(repository)
@@ -430,21 +469,19 @@ def test_explicit_baseline_recalculates_tracking_series_in_date_and_row_order(
     service.confirm_row(
         first.row_id,
         confirmed_daily_man_day=Decimal("3.0"),
-        confirmed_cumulative_man_day=Decimal("13.0"),
         resolution_note="첫날 확정",
     )
-    # Reported cumulative (99.0) mismatches the running total; the user
-    # resolves it by accepting the calculated value instead.
+    # Reported cumulative (99.0) mismatches the running total; confirmed
+    # cumulative stays unset until resolved from the dashboard summary
+    # table (confirm_series_cumulative), not from this per-row confirm.
     service.confirm_row(
         second.row_id,
         confirmed_daily_man_day=Decimal("2.0"),
-        confirmed_cumulative_man_day=Decimal("15.0"),
-        resolution_note="계산값 채택으로 불일치 해소",
+        resolution_note="당일 공수 확정",
     )
     service.confirm_row(
         third.row_id,
         confirmed_daily_man_day=Decimal("1.0"),
-        confirmed_cumulative_man_day=Decimal("16.0"),
         resolution_note="다음 날 확정",
     )
 
@@ -491,13 +528,64 @@ def test_missing_explicit_baseline_starts_the_ledger_at_zero(tmp_path):
     service.confirm_row(
         row.row_id,
         confirmed_daily_man_day=Decimal("3.0"),
-        confirmed_cumulative_man_day=Decimal("3.0"),
-        resolution_note="누적 직접 입력",
+        resolution_note="당일 공수 확정",
     )
 
     recalculated = repository.get_work_report_row(row.row_id)
     assert recalculated.calculated_cumulative_man_day == Decimal("3.0")
-    assert recalculated.confirmed_cumulative_man_day == Decimal("3.0")
+    # reported_cumulative_man_day(13.0) 는 running total(3.0) 과 다르므로
+    # 확정 누적은 대시보드 상단표에서 확정하기 전까지 비어 있는다.
+    assert recalculated.confirmed_cumulative_man_day is None
+    assert WorkReportIssueCode.CUMULATIVE_MISMATCH in recalculated.issue_codes
+
+
+def test_confirm_series_cumulative_resolves_mismatch_on_latest_row(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    service = _work_report_service(repository)
+    row = service.add_manual_row(
+        work_date=date(2026, 7, 30),
+        vendor_name="업체A",
+        tracking_no="AB260101",
+        equipment_name="장비 1",
+        business_team="WA",
+        actual_headcount=2,
+        night_headcount=2,
+        reported_daily_man_day=Decimal("3.0"),
+        reported_cumulative_man_day=Decimal("13.0"),
+        resolution_note="메일 없는 작업",
+    )
+    service.confirm_row(
+        row.row_id,
+        confirmed_daily_man_day=Decimal("3.0"),
+        resolution_note="당일 공수 확정",
+    )
+    mismatched = repository.get_work_report_row(row.row_id)
+    assert mismatched.confirmed_cumulative_man_day is None
+    assert WorkReportIssueCode.CUMULATIVE_MISMATCH in mismatched.issue_codes
+
+    confirmed = service.confirm_series_cumulative(
+        "AB260101",
+        confirmed_cumulative_man_day=Decimal("13.0"),
+        resolution_note="메일값 채택",
+    )
+
+    assert confirmed.confirmed_cumulative_man_day == Decimal("13.0")
+    assert WorkReportIssueCode.CUMULATIVE_MISMATCH not in confirmed.issue_codes
+    resolved = repository.get_work_report_row(row.row_id)
+    assert resolved.confirmed_cumulative_man_day == Decimal("13.0")
+    assert resolved.warning_confirmed is True
+
+
+def test_confirm_series_cumulative_rejects_unknown_tracking_no(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    service = _work_report_service(repository)
+
+    with pytest.raises(ValueError):
+        service.confirm_series_cumulative(
+            "NO-SUCH-TRACKING",
+            confirmed_cumulative_man_day=Decimal("1.0"),
+            resolution_note="사유",
+        )
 
 
 def test_include_delete_and_restore_recalculate_later_active_rows(tmp_path):
@@ -1042,13 +1130,16 @@ def _confirm_daily(
     row,
     *,
     daily: Decimal,
-    cumulative: Decimal,
+    cumulative: Decimal | None = None,
     note: str = "확정",
 ):
+    # 확정 누적은 confirm_row 가 더 이상 받지 않는다 - 초기 누적 + 확정 투입
+    # 누계로 자동 계산된다. `cumulative` 인자는 과거 호출부의 의도(기대값)를
+    # 문서화하는 용도로만 남기고 서비스에는 넘기지 않는다.
+    del cumulative
     return service.confirm_row(
         row.row_id,
         confirmed_daily_man_day=daily,
-        confirmed_cumulative_man_day=cumulative,
         resolution_note=note,
     )
 

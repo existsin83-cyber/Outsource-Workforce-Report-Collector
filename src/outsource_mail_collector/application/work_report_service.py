@@ -460,9 +460,11 @@ class WorkReportService:
         row_id: int,
         *,
         confirmed_daily_man_day: Decimal,
-        confirmed_cumulative_man_day: Decimal,
         resolution_note: str,
     ) -> WorkReportRow:
+        """Confirm a row's daily man-day. 확정 누적은 여기서 다루지 않는다 -
+        Tracking No. 단위로 대시보드 상단표에서만 확정한다(confirm_series_cumulative)."""
+
         row = self._repository.get_work_report_row(row_id)
         blockers = set(row.issue_codes) & _STRUCTURAL_BLOCKERS
         if blockers:
@@ -482,28 +484,76 @@ class WorkReportService:
             confirmed_daily_man_day=quantize_man_day(
                 Decimal(str(confirmed_daily_man_day))
             ),
-            confirmed_cumulative_man_day=quantize_man_day(
-                Decimal(str(confirmed_cumulative_man_day))
-            ),
             resolution_note=resolution_note,
         )
         if confirmed.tracking_no:
-            self._recalculate_tracking_series(
-                confirmed.tracking_no,
-                preserve_confirmed_row_id=confirmed.row_id,
-            )
+            self._recalculate_tracking_series(confirmed.tracking_no)
         return work_report_row_from_stored(
             self._repository.get_work_report_row(row_id)
+        )
+
+    def confirm_series_cumulative(
+        self,
+        tracking_no: str,
+        *,
+        confirmed_cumulative_man_day: Decimal,
+        resolution_note: str,
+    ) -> WorkReportRow:
+        """Confirm one Tracking No.'s cumulative man-day from the dashboard
+        summary table, applied to that series' latest reportable row."""
+
+        if not resolution_note.strip():
+            raise ValueError("확인 사유를 입력해 주세요.")
+        normalized = normalize_tracking_no(tracking_no)
+        if not normalized:
+            raise ValueError("Tracking No.가 필요합니다.")
+        rows = [
+            row
+            for row in self._repository.list_all_work_report_rows()
+            if normalize_tracking_no(row.tracking_no or "") == normalized
+            and row.included
+            and row.work_date is not None
+        ]
+        if not rows:
+            raise ValueError("확정할 수 있는 행이 없습니다.")
+        latest = max(rows, key=lambda row: (row.work_date, row.row_id))
+        quantized = quantize_man_day(Decimal(str(confirmed_cumulative_man_day)))
+        remaining_issues = tuple(
+            issue
+            for issue in latest.issue_codes
+            if issue
+            not in (
+                WorkReportIssueCode.CUMULATIVE_MISMATCH,
+                WorkReportIssueCode.CUMULATIVE_MISSING,
+            )
+        )
+        with self._repository.transaction():
+            self._repository.update_work_report_row(
+                latest.row_id,
+                {
+                    "confirmed_cumulative_man_day": quantized,
+                    "issue_codes": remaining_issues,
+                    "warning_confirmed": not remaining_issues,
+                },
+                resolution_note=resolution_note,
+            )
+            self._recalculate_tracking_series(
+                normalized, preserve_confirmed_row_id=latest.row_id
+            )
+        return work_report_row_from_stored(
+            self._repository.get_work_report_row(latest.row_id)
         )
 
     def confirm_rows(
         self, row_ids: Iterable[int], *, resolution_note: str
     ) -> list[WorkReportRow]:
-        """Bulk-confirm rows atomically using each row's unambiguous candidate.
+        """Bulk-confirm rows' daily man-day atomically using each row's
+        unambiguous candidate. 확정 누적은 여기서 다루지 않는다 - Tracking No.
+        단위로 대시보드 상단표에서만 확정한다(confirm_series_cumulative).
 
         A row confirms automatically only when its reported and calculated
-        values agree (or one already carries a prior confirmed value). Any
-        row that is structurally blocked, dated on or before an explicit
+        daily values agree (or one already carries a prior confirmed value).
+        Any row that is structurally blocked, dated on or before an explicit
         cumulative baseline, or genuinely ambiguous aborts the whole batch so
         partial confirms never happen; ambiguous rows still require the
         per-row review dialog.
@@ -516,7 +566,7 @@ class WorkReportService:
             stored_rows = self._validate_bulk_rows(
                 ids, require_deleted=False, action_label="공수 확정"
             )
-            planned: list[tuple[int, Decimal, Decimal]] = []
+            planned: list[tuple[int, Decimal]] = []
             for row_id, stored in zip(ids, stored_rows):
                 row = work_report_row_from_stored(stored)
                 blockers = set(row.issue_codes) & _STRUCTURAL_BLOCKERS
@@ -529,12 +579,7 @@ class WorkReportService:
                     row.reported_daily_man_day,
                     row.calculated_daily_man_day,
                 )
-                confirmed_cumulative = _bulk_confirm_candidate(
-                    row.confirmed_cumulative_man_day,
-                    row.reported_cumulative_man_day,
-                    row.calculated_cumulative_man_day,
-                )
-                if confirmed_daily is None or confirmed_cumulative is None:
+                if confirmed_daily is None:
                     raise ValueError(
                         "메일 값과 계산 값이 달라 개별 확인이 필요한 행입니다: "
                         f"{row_id}"
@@ -552,15 +597,12 @@ class WorkReportService:
                         "초기 누적 기준일 이전 작업일은 확정할 수 없습니다: "
                         f"{row_id}"
                     )
-                planned.append((row_id, confirmed_daily, confirmed_cumulative))
-            for row_id, confirmed_daily, confirmed_cumulative in planned:
+                planned.append((row_id, confirmed_daily))
+            for row_id, confirmed_daily in planned:
                 self._repository.confirm_work_report_row(
                     row_id,
                     confirmed_daily_man_day=quantize_man_day(
                         Decimal(str(confirmed_daily))
-                    ),
-                    confirmed_cumulative_man_day=quantize_man_day(
-                        Decimal(str(confirmed_cumulative))
                     ),
                     resolution_note=note,
                 )
@@ -923,6 +965,35 @@ class WorkReportService:
             running = quantize_man_day(running + row.confirmed_daily_man_day)
         return running
 
+    def duplicate_groups(self) -> list[tuple[WorkReportRow, ...]]:
+        """Read-only check: rows sharing (작업일, 거래처명, Tracking No., 장비명)
+        that could be the same work reported more than once. Separate from
+        the auto DUPLICATE_UNRESOLVED flag (_mark_unresolved_duplicates) so a
+        user can look this up any time without it mutating anything."""
+
+        groups: dict[
+            tuple[date, str, str, str], list[StoredWorkReportRow]
+        ] = {}
+        for row in self._repository.list_work_report_rows(date.min, date.max):
+            if row.work_date is None or row.cumulative_series_key is None:
+                continue
+            if not row.included:
+                continue
+            groups.setdefault(
+                (
+                    row.work_date,
+                    (_clean_text(row.vendor_name) or "").casefold(),
+                    normalize_tracking_no(row.tracking_no or ""),
+                    (_clean_text(row.equipment_name) or "").casefold(),
+                ),
+                [],
+            ).append(row)
+        return [
+            tuple(work_report_row_from_stored(row) for row in candidates)
+            for candidates in groups.values()
+            if len(candidates) >= 2
+        ]
+
     def _mark_unresolved_duplicates(self) -> None:
         rows = self._repository.list_work_report_rows(date.min, date.max)
         groups: dict[
@@ -1063,17 +1134,24 @@ class WorkReportService:
                     confirmed = reported
 
             if row.row_id == preserve_confirmed_row_id:
+                # 사용자가 이 행의 확정 누적을 직접 확정했다(confirm_series_cumulative) -
+                # 재계산이 다시 불일치/미기재 이슈를 붙이지 않도록 제거한다.
                 confirmed = row.confirmed_cumulative_man_day
+                issues = [
+                    issue
+                    for issue in issues
+                    if issue
+                    not in (
+                        WorkReportIssueCode.CUMULATIVE_MISMATCH,
+                        WorkReportIssueCode.CUMULATIVE_MISSING,
+                    )
+                ]
             changes.update(
                 {
                     "calculated_cumulative_man_day": calculated,
                     "confirmed_cumulative_man_day": confirmed,
                     "issue_codes": tuple(issues),
-                    "warning_confirmed": (
-                        row.warning_confirmed
-                        if row.row_id == preserve_confirmed_row_id
-                        else not issues
-                    ),
+                    "warning_confirmed": not issues,
                 }
             )
             self._persist_cumulative_changes(row, changes)

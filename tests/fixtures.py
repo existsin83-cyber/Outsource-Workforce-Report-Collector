@@ -121,6 +121,7 @@ CUMULATIVE_MAN_DAY_VARIANTS = (
 
 TOTAL_INPUT_MAN_DAY = "외주 인원 : 1명 (야근 : 0명) 총 투입 공수 : 100"
 TOTAL_AND_DAILY_MAN_DAY = "외주 인원 : 1명 총  투입 공수 : 100\n투입 공수 : 2"
+INLINE_HEADCOUNT_WITH_CUMULATIVE = "외주 인원 : 2명 (야근 2명) 누적 공수 : 73.5공수"
 
 DATE_SUBJECT_UNDERSCORE = "26_07_29 (수) 일일 업무보고"
 DATE_SUBJECT_DOTTED = "2026. 07. 29. 외주 작업보고"

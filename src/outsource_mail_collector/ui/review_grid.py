@@ -105,6 +105,14 @@ class ReviewGridWidget(QTableWidget):
         self.verticalHeader().setVisible(False)
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        # ponytail: 다크 모드에서는 팔레트 Base 색이 거의 검정이라, 선택 셀에
+        # 배경/글자색을 명시하지 않으면 선택한 행이 읽을 수 없는 검은 바탕이
+        # 된다(review_grid 는 문제 행에만 배경을 칠하고 나머지는 팔레트에
+        # 맡기기 때문). 대시보드의 강조색(#1565c0)과 맞춘다.
+        self.setStyleSheet(
+            "QTableWidget::item:selected {background:#1565c0;color:#ffffff;}"
+            "QTableWidget::item:selected:!active {background:#90caf9;color:#1a1a1a;}"
+        )
         if rows:
             self.set_rows(rows)
 
@@ -155,6 +163,10 @@ class ReviewGridWidget(QTableWidget):
         selector.setCheckState(Qt.CheckState.Unchecked)
         selector.setData(Qt.ItemDataRole.UserRole, row.row_id)
         selector.setToolTip("행 선택: 현재 표시값은 선택되지 않음입니다.")
+        problem = bool(row.issue_codes) and not row.warning_confirmed
+        if problem:
+            selector.setBackground(_PROBLEM_BACKGROUND)
+            selector.setForeground(_PROBLEM_FOREGROUND)
         self.setItem(row_index, 0, selector)
 
         issue_text = (
@@ -179,7 +191,6 @@ class ReviewGridWidget(QTableWidget):
             _display_decimal(row.reported_cumulative_man_day),
             issue_text,
         )
-        problem = bool(row.issue_codes) and not row.warning_confirmed
         for column, value in enumerate(values, start=1):
             item = QTableWidgetItem(value)
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -205,6 +216,9 @@ class ReviewGridWidget(QTableWidget):
             font = QFont(included.font())
             font.setStrikeOut(True)
             included.setFont(font)
+        if problem:
+            included.setBackground(_PROBLEM_BACKGROUND)
+            included.setForeground(_PROBLEM_FOREGROUND)
         self.setItem(row_index, _INCLUDED_COLUMN, included)
         status = self.item(row_index, _COLUMNS.index("검증 상태"))
         if status is not None and row.issue_codes:

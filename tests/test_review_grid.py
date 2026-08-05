@@ -72,6 +72,11 @@ def test_review_grid_shows_compilation_columns_and_problem_styling():
     assert (
         grid.item(1, _col("검증 상태")).foreground().color().name() == "#4a1f00"
     )
+    # 선택 체크박스(0열)와 포함(마지막-1열)도 문제 행이면 같은 배경을 칠해야
+    # 크림색 행 안에 어두운 셀이 남지 않는다.
+    assert grid.item(1, 0).background().color().name() == "#fff3e0"
+    assert grid.item(1, _col("포함")).background().color().name() == "#fff3e0"
+    assert grid.item(0, 0).background().color().name() != "#fff3e0"
     assert grid.item(2, 1).font().strikeOut()
 
 

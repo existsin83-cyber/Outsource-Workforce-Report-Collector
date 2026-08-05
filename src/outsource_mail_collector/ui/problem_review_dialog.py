@@ -36,7 +36,6 @@ class ProblemReviewDialog(QDialog):
         reported_cumulative: Decimal | None = None,
         calculated_cumulative: Decimal | None = None,
         confirmed_daily: Decimal | None = None,
-        confirmed_cumulative: Decimal | None = None,
         issue_codes: tuple[WorkReportIssueCode, ...] = (),
         actual_headcount: int | None = None,
         night_headcount: int | None = None,
@@ -62,7 +61,8 @@ class ProblemReviewDialog(QDialog):
         self.instruction_label = QLabel(
             "메일값은 메일 본문에서 읽은 값, 자동 계산값은 인원·공수 "
             "규칙으로 계산한 값입니다. 두 값을 비교해 Excel에 반영할 "
-            "확정값을 입력하세요."
+            "확정 투입을 입력하세요. 확정 누적은 수주 공수 대시보드 "
+            "상단표에서 Tracking No. 단위로 확정합니다."
         )
         self.instruction_label.setWordWrap(True)
         layout.addRow(self.instruction_label)
@@ -85,9 +85,6 @@ class ProblemReviewDialog(QDialog):
             _display(calculated_cumulative)
         )
         self.confirmed_daily_edit = QLineEdit(_display(confirmed_daily))
-        self.confirmed_cumulative_edit = QLineEdit(
-            _display(confirmed_cumulative)
-        )
         self.mail_value_button = QPushButton("메일값 채택")
         self.calculated_value_button = QPushButton("계산값 채택")
         self.direct_input_button = QPushButton("직접 입력")
@@ -123,9 +120,6 @@ class ProblemReviewDialog(QDialog):
         self.confirmed_daily_edit.setPlaceholderText(
             "메일값과 계산값을 비교해 확정 투입 입력"
         )
-        self.confirmed_cumulative_edit.setPlaceholderText(
-            "메일값과 계산값을 비교해 확정 누적 입력"
-        )
         self.note_edit.setPlaceholderText("확정 근거 또는 확인 내용을 입력")
         for key, widget in (
             ("메일 투입", self.reported_daily_label),
@@ -133,7 +127,6 @@ class ProblemReviewDialog(QDialog):
             ("확정 투입", self.confirmed_daily_edit),
             ("메일 누적", self.reported_cumulative_label),
             ("계산 누적", self.calculated_cumulative_label),
-            ("확정 누적", self.confirmed_cumulative_edit),
         ):
             widget.setToolTip(COLUMN_HELP[key])
         if duplicate_mode:
@@ -152,7 +145,6 @@ class ProblemReviewDialog(QDialog):
                 ("확정 투입", self.confirmed_daily_edit),
                 ("메일 누적", self.reported_cumulative_label),
                 ("계산 누적", self.calculated_cumulative_label),
-                ("확정 누적", self.confirmed_cumulative_edit),
             ):
                 layout.addRow(label, widget)
             choice_layout = QHBoxLayout()
@@ -198,10 +190,6 @@ class ProblemReviewDialog(QDialog):
                 self.confirmed_daily_edit.text(),
                 field_name="확정 투입",
             ),
-            "confirmed_cumulative_man_day": _required_decimal(
-                self.confirmed_cumulative_edit.text(),
-                field_name="확정 누적",
-            ),
             "resolution_note": note,
         }
         if self._headcount_correction:
@@ -245,15 +233,14 @@ class ProblemReviewDialog(QDialog):
         daily: Decimal | None,
         cumulative: Decimal | None,
     ) -> None:
+        del cumulative  # 확정 누적은 이 창에서 다루지 않는다 (Tracking No. 단위로 대시보드에서 확정)
         if daily is not None:
             self.confirmed_daily_edit.setText(_display(daily))
-        if cumulative is not None:
-            self.confirmed_cumulative_edit.setText(_display(cumulative))
         self.choice_label.setText("메일값 또는 계산값을 선택했습니다.")
 
     def _choose_direct_input(self) -> None:
         self.choice_label.setText(
-            "직접 입력을 선택했습니다. 확정 공수와 누적 공수를 직접 수정하세요."
+            "직접 입력을 선택했습니다. 확정 투입을 직접 수정하세요."
         )
         self.confirmed_daily_edit.setFocus()
 

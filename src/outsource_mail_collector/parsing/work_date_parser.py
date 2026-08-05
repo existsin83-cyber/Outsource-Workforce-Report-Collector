@@ -26,6 +26,12 @@ _FULL_DATE_PATTERNS = (
 _MONTH_DAY_PATTERN = re.compile(
     r"(?<!\d)(?P<month>\d{1,2})\s*월\s*(?P<day>\d{1,2})\s*일"
 )
+# ponytail: bare 6-digit YYMMDD with no separator (e.g. "..._260804"). Tried
+# last so it never preempts the separator/월일 patterns above, and the
+# lookarounds keep it off alphanumeric runs like tracking numbers (SK260303).
+_COMPACT_DATE_PATTERN = re.compile(
+    r"(?<![0-9A-Za-z])(?P<year>\d{2})(?P<month>\d{2})(?P<day>\d{2})(?![0-9A-Za-z])"
+)
 
 
 @dataclass(frozen=True)
@@ -99,6 +105,13 @@ def _extract_date(text: str, default_year: int) -> date | None:
     if match:
         return _safe_date(
             default_year, int(match.group("month")), int(match.group("day"))
+        )
+    match = _COMPACT_DATE_PATTERN.search(text)
+    if match:
+        return _safe_date(
+            2000 + int(match.group("year")),
+            int(match.group("month")),
+            int(match.group("day")),
         )
     return None
 

@@ -11,12 +11,12 @@ from fixtures import (
     FORMAT_B_NUMBERED_VENDOR_PER_UNIT,
     FORMAT_C_INLINE_ALL_IN_ONE_LINE,
     FORMAT_D_INLINE_REPORTED_DAILY,
+    INLINE_HEADCOUNT_WITH_CUMULATIVE,
     TOTAL_AND_DAILY_MAN_DAY,
     TOTAL_INPUT_MAN_DAY,
 )
 from outsource_mail_collector.domain.models import EquipmentSection
 from outsource_mail_collector.domain.work_report import man_day_basis
-from outsource_mail_collector.parsing.outsource_extractor import AMBIGUOUS_NOTE_PREFIX
 
 
 def _sections_for(body: str):
@@ -48,6 +48,21 @@ def test_common_parenthesized_weekday_date_lines_are_not_headers(date_line: str)
     assert sections[0].equipment_name == "장비A"
 
 
+def test_extract_work_records_produces_deterministic_ids_on_reparse():
+    section = EquipmentSection(
+        section_index=0,
+        mail_id="test-mail-id",
+        section_text="외주 인원 : 1명",
+    )
+
+    first = extract_work_records(section)
+    second = extract_work_records(section)
+
+    assert [r.work_record_id for r in first] == [
+        r.work_record_id for r in second
+    ]
+
+
 def test_extract_work_records_preserves_existing_tracking_no_when_text_has_none():
     section = EquipmentSection(
         section_index=0,
@@ -64,7 +79,7 @@ def test_extract_work_records_preserves_existing_tracking_no_when_text_has_none(
     assert section.tracking_no == "KEEP-ME"
 
 
-def test_format_a_category_dot_no_vendor_ambiguous_total():
+def test_format_a_category_dot_no_vendor_total_is_cumulative():
     sections = _sections_for(FORMAT_A_CATEGORY_DOT)
     assert len(sections) == 3
 
@@ -73,18 +88,17 @@ def test_format_a_category_dot_no_vendor_ambiguous_total():
     # 첫 섹션(고객사A)은 외주 인원 언급이 없음 -> 레코드 없음 (정상적인 "외주 없음")
     assert records_by_section[0] == []
 
-    # 두 번째 섹션(고객사B): 외주 인원 1명, 야근 1명, 총공수는 라벨이 모호해 값을 채우지 않음
+    # 두 번째 섹션(고객사B): 외주 인원 1명, 야근 1명, "총 공수" 는 누적으로 해석
     record = records_by_section[1][0]
     assert record.vendor_name is None
     assert record.actual_headcount == 1.0
     assert record.night_headcount == 1.0
     assert record.daily_man_day is None
-    assert record.cumulative_man_day is None
-    assert record.note is not None and "총 공수 43.5" in record.note
+    assert record.cumulative_man_day == 43.5
+    assert record.note is None
 
     result = validate(sections[1], record)
-    assert result.status == ReviewStatus.NUMBER_UNPARSABLE
-    assert "당일/누적 여부가 불명확한 공수 값 존재" in result.issues
+    assert result.status == ReviewStatus.CUMULATIVE_ONLY
 
 
 def test_format_b_vendor_header_per_unit_records():
@@ -190,7 +204,7 @@ def test_vendor_style_accepts_cumulative_man_day_with_optional_unit(
     assert record.cumulative_man_day == expected
 
 
-def test_total_input_man_day_is_ambiguous_not_daily():
+def test_total_input_man_day_is_treated_as_cumulative_not_daily():
     section = EquipmentSection(
         section_index=0,
         mail_id="test-mail-id",
@@ -200,7 +214,8 @@ def test_total_input_man_day_is_ambiguous_not_daily():
     record = extract_work_records(section)[0]
 
     assert record.daily_man_day is None
-    assert record.note == f"{AMBIGUOUS_NOTE_PREFIX} 총 투입 공수 100"
+    assert record.cumulative_man_day == 100.0
+    assert record.note is None
 
 
 def test_total_input_man_day_does_not_hide_later_daily_man_day():
@@ -213,7 +228,23 @@ def test_total_input_man_day_does_not_hide_later_daily_man_day():
     record = extract_work_records(section)[0]
 
     assert record.daily_man_day == 2.0
-    assert record.note == f"{AMBIGUOUS_NOTE_PREFIX} 총  투입 공수 100"
+    assert record.cumulative_man_day == 100.0
+    assert record.note is None
+
+
+def test_inline_headcount_with_explicit_cumulative_label():
+    section = EquipmentSection(
+        section_index=0,
+        mail_id="test-mail-id",
+        section_text=INLINE_HEADCOUNT_WITH_CUMULATIVE,
+    )
+
+    record = extract_work_records(section)[0]
+
+    assert record.actual_headcount == 2.0
+    assert record.night_headcount == 2.0
+    assert record.cumulative_man_day == 73.5
+    assert record.note is None
 
 
 @pytest.mark.parametrize(

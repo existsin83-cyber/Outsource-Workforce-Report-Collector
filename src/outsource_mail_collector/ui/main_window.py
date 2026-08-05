@@ -34,6 +34,7 @@ from outsource_mail_collector.application.models import (
 from outsource_mail_collector.domain.work_report import WorkReportIssueCode
 from outsource_mail_collector.ui.clipboard import ClipboardWriter
 from outsource_mail_collector.ui.deleted_rows_dialog import DeletedRowsDialog
+from outsource_mail_collector.ui.duplicate_rows_dialog import DuplicateRowsDialog
 from outsource_mail_collector.ui.final_report_dialog import FinalReportDialog
 from outsource_mail_collector.ui.manual_row_dialog import ManualRowDialog
 from outsource_mail_collector.ui.problem_review_dialog import (
@@ -156,6 +157,8 @@ class MainWindow(QMainWindow):
         self.delete_button.clicked.connect(self._delete_selected_rows)
         self.recovery_button = QPushButton("삭제 항목 복구")
         self.recovery_button.clicked.connect(self._open_deleted_rows)
+        self.duplicate_check_button = QPushButton("중복 확인")
+        self.duplicate_check_button.clicked.connect(self._open_duplicate_check)
         self.dashboard_button = QPushButton("수주 공수 대시보드")
         self.dashboard_button.setStyleSheet(
             "QPushButton {background:#1565c0;color:white;font-weight:700;"
@@ -171,6 +174,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.manual_button)
         layout.addWidget(self.delete_button)
         layout.addWidget(self.recovery_button)
+        layout.addWidget(self.duplicate_check_button)
         layout.addWidget(self.confirm_selected_button)
         layout.addWidget(self.dashboard_button)
         layout.addStretch()
@@ -376,6 +380,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "선택 삭제 실패", str(exc))
             return
         self._reload_rows()
+
+    def _open_duplicate_check(self) -> None:
+        groups = tuple(self._services.work_report_service.duplicate_groups())
+        DuplicateRowsDialog(groups, self).exec()
 
     def _open_deleted_rows(self) -> None:
         result = self._services.work_report_service.list_rows(

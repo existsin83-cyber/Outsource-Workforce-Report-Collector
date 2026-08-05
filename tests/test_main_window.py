@@ -184,9 +184,6 @@ def test_night_issue_review_updates_headcounts_before_confirmation(
             self.confirmed_daily_edit = SimpleNamespace(
                 setText=lambda text: None
             )
-            self.confirmed_cumulative_edit = SimpleNamespace(
-                setText=lambda text: None
-            )
 
         def exec(self):
             return QDialog.DialogCode.Accepted
@@ -196,7 +193,6 @@ def test_night_issue_review_updates_headcounts_before_confirmation(
                 "actual_headcount": 3,
                 "night_headcount": 1,
                 "confirmed_daily_man_day": Decimal("3.5"),
-                "confirmed_cumulative_man_day": Decimal("10.0"),
                 "resolution_note": "혼합 야근 인원 확인",
             }
 
@@ -220,7 +216,6 @@ def test_night_issue_review_updates_headcounts_before_confirmation(
         (
             1,
             Decimal("3.5"),
-            Decimal("10.0"),
             "혼합 야근 인원 확인",
         )
     ]
@@ -530,6 +525,32 @@ def test_deleted_row_recovery_restores_selected_rows_and_reloads(monkeypatch):
     assert window.review_grid.rowCount() == 2
 
 
+def test_duplicate_check_button_opens_dialog_with_service_groups(monkeypatch):
+    _app()
+    services = _services()
+    group = (_row(1), _row(2))
+    services.work_report_service.duplicate_groups = lambda: [group]
+    window = MainWindow(services)
+    opened: list[tuple] = []
+
+    class FakeDuplicateDialog:
+        DialogCode = QDialog.DialogCode
+
+        def __init__(self, groups, parent=None):
+            opened.append(groups)
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(
+        main_window_module, "DuplicateRowsDialog", FakeDuplicateDialog
+    )
+
+    window.duplicate_check_button.click()
+
+    assert opened == [(group,)]
+
+
 def test_empty_recovery_list_shows_message_without_opening_dialog(
     monkeypatch,
 ):
@@ -685,7 +706,7 @@ class _WorkReportService:
         self.rows = [_row(1)]
         self.manual_calls: list[dict] = []
         self.update_calls: list[tuple[int, dict, str]] = []
-        self.confirm_calls: list[tuple[int, Decimal, Decimal, str]] = []
+        self.confirm_calls: list[tuple[int, Decimal, str]] = []
         self.mapping_refresh_calls = 0
         self.inclusion_calls: list[tuple[int, bool, str]] = []
         self.delete_calls: list[tuple[int, str]] = []
@@ -778,18 +799,15 @@ class _WorkReportService:
         row_id,
         *,
         confirmed_daily_man_day,
-        confirmed_cumulative_man_day,
         resolution_note,
     ):
         self.confirm_calls.append(
-            (
-                row_id,
-                confirmed_daily_man_day,
-                confirmed_cumulative_man_day,
-                resolution_note,
-            )
+            (row_id, confirmed_daily_man_day, resolution_note)
         )
         return self.rows[0]
+
+    def duplicate_groups(self):
+        return []
 
 
 class _FinalReportService:

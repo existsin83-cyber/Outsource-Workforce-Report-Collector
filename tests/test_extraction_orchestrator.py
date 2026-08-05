@@ -45,7 +45,9 @@ def test_process_preserves_night_headcount_and_reported_daily_man_day(repository
     assert result.records[0].daily_man_day == 1.5
 
 
-def test_process_existing_entry_id_returns_saved_rows_without_duplicate(repository):
+def test_process_existing_entry_id_refreshes_in_place_without_duplicate(repository):
+    """Re-collecting the same mail must reuse the same rows, not duplicate them."""
+
     mail = _mail_record("ENTRY-1", FORMAT_B_NUMBERED_VENDOR_PER_UNIT)
     first = ExtractionOrchestrator(repository).process([mail])
 
@@ -56,6 +58,90 @@ def test_process_existing_entry_id_returns_saved_rows_without_duplicate(reposito
         row.record_id for row in first.records
     ]
     assert len(repository.list_review_records(date(2026, 7, 24))) == 4
+
+
+def test_process_recollection_after_deletion_restores_the_row(repository):
+    """A deleted mail-derived work row must come back when its mail is re-collected."""
+
+    from outsource_mail_collector.application.man_day_calculation_service import (
+        ManDayCalculationService,
+    )
+    from outsource_mail_collector.application.work_order_mapping_service import (
+        WorkOrderMappingService,
+    )
+    from outsource_mail_collector.application.work_report_service import (
+        WorkReportService,
+    )
+
+    mail = _mail_record("ENTRY-1", FORMAT_B_NUMBERED_VENDOR_PER_UNIT)
+    orchestrator = ExtractionOrchestrator(repository)
+    work_report_service = WorkReportService(
+        repository, ManDayCalculationService(), WorkOrderMappingService(repository)
+    )
+
+    first = orchestrator.process([mail])
+    rows = work_report_service.synchronize_extracted_records(first.records)
+    deleted = work_report_service.soft_delete_row(
+        rows[0].row_id, resolution_note="테스트 삭제"
+    )
+    assert deleted.deleted_at is not None
+
+    second = orchestrator.process([mail])
+    restored_rows = work_report_service.synchronize_extracted_records(
+        second.records
+    )
+
+    assert restored_rows[0].row_id == rows[0].row_id
+    assert restored_rows[0].deleted_at is None
+
+
+def test_process_recollection_with_fewer_sections_soft_deletes_stale_rows(
+    repository,
+):
+    """A reparse that yields fewer records (edited/corrected mail body) must
+    soft-delete the mail-derived rows that no longer come out of parsing,
+    instead of leaving stale duplicates behind."""
+
+    from outsource_mail_collector.application.man_day_calculation_service import (
+        ManDayCalculationService,
+    )
+    from outsource_mail_collector.application.work_order_mapping_service import (
+        WorkOrderMappingService,
+    )
+    from outsource_mail_collector.application.work_report_service import (
+        WorkReportService,
+    )
+
+    mail = _mail_record("ENTRY-1", FORMAT_B_NUMBERED_VENDOR_PER_UNIT)
+    orchestrator = ExtractionOrchestrator(repository)
+    work_report_service = WorkReportService(
+        repository, ManDayCalculationService(), WorkOrderMappingService(repository)
+    )
+
+    first = orchestrator.process([mail])
+    assert len(first.records) == 4
+    rows = work_report_service.synchronize_extracted_records(first.records)
+    assert len(rows) == 4
+
+    edited_mail = mail.model_copy(
+        update={"body_text": FORMAT_D_INLINE_REPORTED_DAILY}
+    )
+    second = orchestrator.process([edited_mail])
+    assert len(second.records) == 2
+
+    # 두 형식 모두 섹션 0/1을 만들지만 섹션당 레코드 수가 다르다(B: 호기별
+    # 2개씩 -> 4개, D: 섹션당 1개씩 -> 2개). ordinal 0 키는 겹쳐서 그 자리의
+    # 옛 행이 새 파싱값으로 갱신되고, ordinal 1 키(호기 두 번째 줄)만 이번
+    # 파싱 결과에 없어 stale 로 소프트 삭제된다.
+    remaining = work_report_service.list_rows(
+        date(2026, 7, 1), date(2026, 7, 31)
+    ).rows
+    assert len(remaining) == 2
+    all_rows = work_report_service.list_rows(
+        date(2026, 7, 1), date(2026, 7, 31), include_deleted=True
+    ).rows
+    assert sum(row.deleted_at is not None for row in all_rows) == 2
+    assert sum(row.deleted_at is None for row in all_rows) == 2
 
 
 def test_process_converts_vendor_alias_to_canonical_name(repository):
