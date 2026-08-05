@@ -80,6 +80,24 @@ def test_review_grid_shows_compilation_columns_and_problem_styling():
     assert grid.item(2, 1).font().strikeOut()
 
 
+def test_confirmed_warning_row_uses_readable_default_cell_colours():
+    _app()
+    grid = ReviewGridWidget(
+        [
+            _row(
+                1,
+                issue_codes=(WorkReportIssueCode.DAILY_MISMATCH,),
+                warning_confirmed=True,
+            )
+        ]
+    )
+
+    for column in (0, _col("작업일"), _col("포함")):
+        item = grid.item(0, column)
+        assert item.background().color().name() == "#f5f5f5"
+        assert item.foreground().color().name() == "#1a1a1a"
+
+
 def test_manual_row_has_no_original_mail_action():
     _app()
     grid = ReviewGridWidget(

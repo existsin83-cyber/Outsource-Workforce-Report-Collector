@@ -874,6 +874,7 @@ def _table(headers: tuple[str, ...]) -> QTableWidget:
     table.setStyleSheet(
         "QTableWidget::item:selected {background:#1565c0;color:#ffffff;}"
         "QTableWidget::item:selected:!active {background:#90caf9;color:#1a1a1a;}"
+        "QTableWidget::item:focus {background:#1565c0;color:#ffffff;}"
     )
     return table
 

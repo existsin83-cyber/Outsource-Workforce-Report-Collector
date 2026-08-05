@@ -51,6 +51,8 @@ _SELECT_ALL_UNCHECKED = "☐"
 _SELECT_ALL_CHECKED = "☑"
 _INCLUDED_COLUMN = _COLUMNS.index("포함")
 _ACTIONS_COLUMN = _COLUMNS.index("작업")
+_DEFAULT_BACKGROUND = QColor("#f5f5f5")
+_DEFAULT_FOREGROUND = QColor("#1a1a1a")
 _PROBLEM_BACKGROUND = QColor("#fff3e0")
 _PROBLEM_FOREGROUND = QColor("#4a1f00")
 _REVIEW_STATUS_LABELS = {
@@ -110,8 +112,11 @@ class ReviewGridWidget(QTableWidget):
         # 된다(review_grid 는 문제 행에만 배경을 칠하고 나머지는 팔레트에
         # 맡기기 때문). 대시보드의 강조색(#1565c0)과 맞춘다.
         self.setStyleSheet(
+            "QTableWidget {background:#f5f5f5;color:#1a1a1a;}"
+            "QTableWidget::item {background:#f5f5f5;color:#1a1a1a;}"
             "QTableWidget::item:selected {background:#1565c0;color:#ffffff;}"
             "QTableWidget::item:selected:!active {background:#90caf9;color:#1a1a1a;}"
+            "QTableWidget::item:focus {background:#1565c0;color:#ffffff;}"
         )
         if rows:
             self.set_rows(rows)
@@ -164,6 +169,8 @@ class ReviewGridWidget(QTableWidget):
         selector.setData(Qt.ItemDataRole.UserRole, row.row_id)
         selector.setToolTip("행 선택: 현재 표시값은 선택되지 않음입니다.")
         problem = bool(row.issue_codes) and not row.warning_confirmed
+        selector.setBackground(_DEFAULT_BACKGROUND)
+        selector.setForeground(_DEFAULT_FOREGROUND)
         if problem:
             selector.setBackground(_PROBLEM_BACKGROUND)
             selector.setForeground(_PROBLEM_FOREGROUND)
@@ -194,6 +201,8 @@ class ReviewGridWidget(QTableWidget):
         for column, value in enumerate(values, start=1):
             item = QTableWidgetItem(value)
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            item.setBackground(_DEFAULT_BACKGROUND)
+            item.setForeground(_DEFAULT_FOREGROUND)
             if problem:
                 item.setBackground(_PROBLEM_BACKGROUND)
                 item.setForeground(_PROBLEM_FOREGROUND)
@@ -209,6 +218,8 @@ class ReviewGridWidget(QTableWidget):
         included = QTableWidgetItem("포함" if row.included else "제외")
         included.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         included.setFlags(included.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        included.setBackground(_DEFAULT_BACKGROUND)
+        included.setForeground(_DEFAULT_FOREGROUND)
         included.setToolTip(
             f"{COLUMN_HELP['포함']}\n현재 표시값: {included.text()}"
         )
