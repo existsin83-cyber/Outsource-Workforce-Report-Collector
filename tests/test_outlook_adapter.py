@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
+import threading
+from typing import Any
 
 import pytest
 
@@ -105,6 +107,58 @@ def test_connect_retries_once_when_outlook_is_starting():
     assert adapter.list_folders() == ["Inbox"]
 
 
+def test_require_namespace_reconnects_when_cached_namespace_proxy_is_disconnected():
+    mail = FakeMailItem(entry_id="ENTRY-1", sender_email="user@example.com")
+    inbox = FakeFolder("Inbox", items=[mail])
+    dead_namespace = FakeNamespace(inbox)
+    dead_namespace._dead = True
+    new_namespace = FakeNamespace(inbox)
+
+    outlook_calls = 0
+
+    def dispatch(_):
+        nonlocal outlook_calls
+        outlook_calls += 1
+        return FakeOutlook(dead_namespace if outlook_calls == 1 else new_namespace)
+
+    adapter = OutlookComAdapter(dispatch=dispatch)
+    adapter.connect()
+    assert outlook_calls == 1
+
+    adapter.display_message("ENTRY-1")
+
+    assert outlook_calls == 2
+    assert mail.display_count == 1
+
+
+def test_namespace_is_not_shared_across_threads():
+    inbox = FakeFolder("Inbox")
+    namespaces_by_thread: dict[int, FakeNamespace] = {}
+    dispatch_calls: list[int] = []
+
+    def dispatch(_):
+        namespace = FakeNamespace(inbox)
+        namespaces_by_thread[threading.get_ident()] = namespace
+        dispatch_calls.append(threading.get_ident())
+        return FakeOutlook(namespace)
+
+    adapter = OutlookComAdapter(dispatch=dispatch)
+    adapter.connect()
+
+    other_thread_namespace: list[Any] = []
+
+    def worker():
+        adapter.connect()
+        other_thread_namespace.append(adapter._local.namespace)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+
+    assert len(dispatch_calls) == 2
+    assert adapter._local.namespace is not other_thread_namespace[0]
+
+
 class FakeExchangeUser:
     def __init__(self, smtp: str) -> None:
         self.PrimarySmtpAddress = smtp
@@ -185,6 +239,17 @@ class FakeNamespace:
     def __init__(self, inbox: FakeFolder) -> None:
         self.inbox = inbox
         self.requested_ids: list[str] = []
+        self._dead = False
+
+    @property
+    def CurrentProfileName(self) -> str:
+        if self._dead:
+            try:
+                import pywintypes
+                raise pywintypes.com_error(-2147220995, "개체가 서버에 연결되지 않았습니다", None, None)
+            except ImportError:
+                raise OSError("개체가 서버에 연결되지 않았습니다")
+        return "Outlook"
 
     def GetDefaultFolder(self, folder_id: int) -> FakeFolder:
         assert folder_id == 6

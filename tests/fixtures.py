@@ -151,3 +151,14 @@ DATE_SUBJECT_DOTTED = "2026. 07. 29. 외주 작업보고"
 DATE_SUBJECT_KOREAN = "7월 29일 일일 업무보고"
 DATE_BODY_MATCHING = "2026년 7월 29일 업무보고 드립니다."
 DATE_BODY_CONFLICTING = "2026년 7월 28일 업무보고 드립니다."
+
+# 장비 구간 안에 작업일과 무관한 날짜(입고/출하 예정일 등)가 있는 실제 관찰 패턴.
+# 본문 전체를 날짜 탐색 대상으로 삼으면 이 날짜가 DATE_MISMATCH 오탐을 일으킨다.
+DATE_BODY_UNRELATED_DATE_IN_EQUIPMENT_SECTION = (
+    "안녕하세요, 일일 업무 보고 드립니다.\n"
+    "4. LAton58호기\n"
+    ".수주번호 : ZZ260116\n"
+    ".외주 인원 : 2명 (야근 2명) 누적 공수 : 76.5공수\n"
+    ".Stage & Frame : 2026-07-10 입고 완료\n"
+    ".출하 : 2026-09-20 예정"
+)

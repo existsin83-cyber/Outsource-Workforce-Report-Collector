@@ -14,9 +14,11 @@ def service() -> ManDayCalculationService:
     return ManDayCalculationService()
 
 
-def test_missing_reported_daily_uses_calculation_and_warns(
+def test_missing_reported_daily_uses_calculation_without_warning(
     service: ManDayCalculationService,
 ) -> None:
+    """Many mail authors report only headcount, not a separate daily man-day
+    figure - that is a normal writing style, not something to flag for review."""
     result = service.calculate_daily(
         actual_headcount=2,
         night_headcount=2,
@@ -25,7 +27,7 @@ def test_missing_reported_daily_uses_calculation_and_warns(
 
     assert result.calculated == Decimal("3.0")
     assert result.confirmed_candidate == Decimal("3.0")
-    assert WorkReportIssueCode.DAILY_MISSING in result.issues
+    assert result.issues == ()
 
 
 def test_reported_daily_mismatch_requires_confirmation(

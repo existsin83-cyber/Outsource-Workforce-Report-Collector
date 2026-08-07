@@ -11,6 +11,7 @@ from outsource_mail_collector.application.man_day_calculation_service import (
     quantize_man_day,
 )
 from outsource_mail_collector.application.work_order_mapping_service import (
+    WorkOrderMappingResolution,
     WorkOrderMappingService,
 )
 from outsource_mail_collector.application.models import (
@@ -78,7 +79,6 @@ _RECALCULATED_ISSUE_CODES = {
 }
 _MAPPING_ISSUE_CODES = {
     WorkReportIssueCode.WORK_ORDER_UNREGISTERED,
-    WorkReportIssueCode.EQUIPMENT_MAPPING_MISMATCH,
 }
 _INVALID_PROVENANCE_FIELDS = {
     WorkReportIssueCode.ACTUAL_HEADCOUNT_INVALID: "actual_headcount",
@@ -129,15 +129,13 @@ class WorkReportService:
             ),
         )
         for record in ordered:
-            mapping = self._mapping.resolve(
-                record.tracking_no, record.equipment_name
-            )
+            mapping = self._mapping.resolve(record.tracking_no)
             values = self._calculate_values(
                 work_date=record.report_date,
                 work_date_confirmed=record.work_date_confirmed,
                 vendor_name=_clean_text(record.vendor_name) or mapping.vendor_name,
                 tracking_no=record.tracking_no,
-                equipment_name=record.equipment_name,
+                equipment_name=mapping.equipment_name or record.equipment_name,
                 business_team=(
                     _clean_text(record.business_team) or mapping.business_team
                 ),
@@ -147,7 +145,7 @@ class WorkReportService:
                 reported_cumulative_man_day=record.cumulative_man_day,
                 date_issue_codes=record.date_issue_codes,
                 mapping_issue_codes=mapping.issue_codes,
-                review_status=record.review_status,
+                review_status=_resolve_review_status(record.review_status, mapping),
             )
             stored_rows.append(
                 self._repository.get_or_create_mail_report_row(
@@ -386,15 +384,17 @@ class WorkReportService:
         business_team = changes.get(
             "business_team", current.business_team
         )
+        equipment_name = changes.get(
+            "equipment_name", current.equipment_name
+        )
         mapping_issue_codes: tuple[WorkReportIssueCode, ...] = ()
+        review_status = current.review_status
         if mapping_recalculation:
-            old_mapping = self._mapping.resolve(
-                current.tracking_no, current.equipment_name
-            )
+            old_mapping = self._mapping.resolve(current.tracking_no)
             new_mapping = self._mapping.resolve(
-                changes.get("tracking_no", current.tracking_no),
-                changes.get("equipment_name", current.equipment_name),
+                changes.get("tracking_no", current.tracking_no)
             )
+            review_status = _resolve_review_status(review_status, new_mapping)
             if "vendor_name" not in changes and (
                 not _clean_text(current.vendor_name)
                 or (
@@ -413,6 +413,15 @@ class WorkReportService:
                 )
             ):
                 business_team = new_mapping.business_team
+            if "equipment_name" not in changes and (
+                not _clean_text(current.equipment_name)
+                or (
+                    old_mapping.equipment_name is not None
+                    and _clean_text(current.equipment_name)
+                    == _clean_text(old_mapping.equipment_name)
+                )
+            ):
+                equipment_name = new_mapping.equipment_name
             mapping_issue_codes = new_mapping.issue_codes
         values = self._calculate_values(
             work_date=changes.get("work_date", current.work_date),
@@ -421,9 +430,7 @@ class WorkReportService:
             ),
             vendor_name=vendor_name,
             tracking_no=changes.get("tracking_no", current.tracking_no),
-            equipment_name=changes.get(
-                "equipment_name", current.equipment_name
-            ),
+            equipment_name=equipment_name,
             business_team=business_team,
             actual_headcount=changes.get(
                 "actual_headcount", current.actual_headcount
@@ -440,7 +447,7 @@ class WorkReportService:
             ),
             date_issue_codes=retained_issues,
             mapping_issue_codes=mapping_issue_codes,
-            review_status=current.review_status,
+            review_status=review_status,
         )
         values.pop("resolution_note")
         if "confirmed_daily_man_day" in changes:
@@ -466,6 +473,8 @@ class WorkReportService:
         Tracking No. 단위로 대시보드 상단표에서만 확정한다(confirm_series_cumulative)."""
 
         row = self._repository.get_work_report_row(row_id)
+        if not row.included:
+            raise ValueError(f"제외된 행은 확정할 수 없습니다: {row_id}")
         blockers = set(row.issue_codes) & _STRUCTURAL_BLOCKERS
         if blockers:
             raise ValueError("구조적 오류를 먼저 해결해야 행을 확정할 수 있습니다.")
@@ -569,6 +578,8 @@ class WorkReportService:
             planned: list[tuple[int, Decimal]] = []
             for row_id, stored in zip(ids, stored_rows):
                 row = work_report_row_from_stored(stored)
+                if not stored.included:
+                    raise ValueError(f"제외된 행은 확정할 수 없습니다: {row_id}")
                 blockers = set(row.issue_codes) & _STRUCTURAL_BLOCKERS
                 if blockers:
                     raise ValueError(
@@ -792,11 +803,9 @@ class WorkReportService:
             _append_issue(issues, WorkReportIssueCode.SERIES_KEY_MISSING)
 
         reported_daily: Decimal | None = None
-        reported_daily_valid = True
         try:
             reported_daily = _optional_man_day(reported_daily_man_day)
         except (ValueError, InvalidOperation):
-            reported_daily_valid = False
             _append_issue(issues, WorkReportIssueCode.INVALID_VALUE)
             _append_issue(
                 issues, WorkReportIssueCode.REPORTED_DAILY_INVALID
@@ -864,14 +873,6 @@ class WorkReportService:
             daily_calculated = daily.calculated
             confirmed_daily = daily.confirmed_candidate
             for issue in daily.issues:
-                if (
-                    issue is WorkReportIssueCode.DAILY_MISSING
-                    and (
-                        not reported_daily_valid
-                        or WorkReportIssueCode.REPORTED_DAILY_INVALID in issues
-                    )
-                ):
-                    continue
                 _append_issue(issues, issue)
 
         cumulative_calculated: Decimal | None = None
@@ -1182,6 +1183,20 @@ def build_cumulative_series_key(
     del vendor_name, equipment_name
     tracking = normalize_tracking_no(tracking_no or "")
     return tracking or None
+
+
+def _resolve_review_status(
+    review_status: ReviewStatus, mapping: WorkOrderMappingResolution
+) -> ReviewStatus:
+    """Clear a stale 업체명 미확인 tag once the work-order master resolves a vendor.
+
+    The tag is set at parse time when the mail body itself had no vendor
+    name - it is no longer accurate once a registered tracking number
+    supplies one, the same reasoning applied to equipment_name.
+    """
+    if review_status is ReviewStatus.VENDOR_UNCONFIRMED and mapping.vendor_name:
+        return ReviewStatus.NORMAL
+    return review_status
 
 
 def _clean_text(value: str | None) -> str | None:

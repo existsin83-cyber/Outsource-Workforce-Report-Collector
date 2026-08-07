@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtGui import QBrush, QColor, QKeySequence
@@ -81,6 +81,29 @@ _DETAIL_HEADERS = (
     "검토 상태",
     "문제 및 조치",
 )
+_SUMMARY_SORTABLE_COLUMNS: dict[str, Callable[[TrackingDashboardSummary], Any]] = {
+    "Tracking No.": lambda summary: summary.tracking_no,
+    "최근 작업일": lambda summary: summary.latest_work_date,
+    "거래처명": lambda summary: summary.vendor_name or "",
+    "장비명": lambda summary: summary.equipment_name or "",
+    "사업팀": lambda summary: summary.business_team or "",
+    "최근 실제 인원": lambda summary: summary.latest_actual_headcount,
+    "최근 야근 인원": lambda summary: summary.latest_night_headcount,
+    "최근 확정 투입": lambda summary: summary.latest_confirmed_daily_man_day,
+    "초기 누적": lambda summary: summary.initial_cumulative_man_day,
+    "메일 누적": lambda summary: summary.latest_reported_cumulative_man_day,
+    "계산 누적": lambda summary: summary.latest_calculated_cumulative_man_day,
+    "확정 누적": lambda summary: summary.latest_confirmed_cumulative_man_day,
+}
+_DETAIL_SORTABLE_COLUMNS: dict[str, Callable[[WorkReportRow], Any]] = {
+    "작업일": lambda row: row.work_date,
+    "실제 작업인원": lambda row: row.actual_headcount,
+    "야근 인원": lambda row: row.night_headcount,
+    "메일 투입": lambda row: row.reported_daily_man_day,
+    "계산 투입": lambda row: row.calculated_daily_man_day,
+    "확정 투입": lambda row: row.confirmed_daily_man_day,
+    "메일 누적": lambda row: row.reported_cumulative_man_day,
+}
 _TRACKING_COLUMN = _SUMMARY_HEADERS.index("Tracking No.")
 _STATUS_COLUMN = _SUMMARY_HEADERS.index("검증 상태")
 _INITIAL_CUMULATIVE_COLUMN = _SUMMARY_HEADERS.index("초기 누적")
@@ -284,6 +307,10 @@ class TrackingDashboardDialog(QDialog):
         self._detail_blocked: list[bool] = []
         self._active_target: str | None = None
         self._summary_edit_column: int = _INITIAL_CUMULATIVE_COLUMN
+        self._summary_column_sort: tuple[int, bool] | None = None
+        self._detail_column_sort: tuple[int, bool] | None = None
+        self._summary_sized = False
+        self._detail_sized = False
         self.setWindowTitle(
             "완료 장비 목록" if completed_only else "수주 공수 대시보드"
         )
@@ -315,6 +342,9 @@ class TrackingDashboardDialog(QDialog):
             self._handle_summary_double_click
         )
         self.summary_table.cellClicked.connect(self._handle_summary_click)
+        self.summary_table.horizontalHeader().sectionClicked.connect(
+            self._summary_header_clicked
+        )
         self.summary_table.horizontalHeaderItem(
             _INITIAL_CUMULATIVE_COLUMN
         ).setToolTip(
@@ -371,6 +401,9 @@ class TrackingDashboardDialog(QDialog):
         self.detail_table.currentCellChanged.connect(
             lambda *_args: self._on_detail_current_changed()
         )
+        self.detail_table.horizontalHeader().sectionClicked.connect(
+            self._detail_header_clicked
+        )
         layout.addWidget(self.detail_table)
         layout = outer_layout
         self.edit_button = QPushButton("선택 행 수정")
@@ -419,6 +452,19 @@ class TrackingDashboardDialog(QDialog):
             else self._dashboard_service.summaries()
         )
         self._summaries = self._sort_summaries(summaries)
+        self._summary_column_sort = None
+        self._render_summary_table(selected)
+        if not self._summaries:
+            self._detail_rows = ()
+            self._detail_blocked = []
+            self.detail_table.setRowCount(0)
+            self.guidance_label.setText("표시할 Tracking No. 집계가 없습니다.")
+        else:
+            self._load_selected_details()
+        self._load_start_date()
+        self._update_edit_button_labels()
+
+    def _render_summary_table(self, selected: str | None) -> None:
         signals_blocked = self.summary_table.blockSignals(True)
         try:
             self.summary_table.clearSelection()
@@ -491,17 +537,29 @@ class TrackingDashboardDialog(QDialog):
         self._summary_blocked = [
             bool(summary.blockers) for summary in self._summaries
         ]
-        self.summary_table.resizeColumnsToContents()
+        if not self._summary_sized:
+            self.summary_table.resizeColumnsToContents()
+            self._summary_sized = True
         _paint_current_row(self.summary_table, self._summary_blocked)
-        if not self._summaries:
-            self._detail_rows = ()
-            self._detail_blocked = []
-            self.detail_table.setRowCount(0)
-            self.guidance_label.setText("표시할 Tracking No. 집계가 없습니다.")
+
+    def _summary_header_clicked(self, column: int) -> None:
+        key_func = _SUMMARY_SORTABLE_COLUMNS.get(_SUMMARY_HEADERS[column])
+        if key_func is None or not self._summaries:
+            return
+        if self._summary_column_sort and self._summary_column_sort[0] == column:
+            ascending = not self._summary_column_sort[1]
         else:
-            self._load_selected_details()
-        self._load_start_date()
-        self._update_edit_button_labels()
+            ascending = True
+        self._summary_column_sort = (column, ascending)
+        selected = self._selected_tracking_no()
+        self._summaries = tuple(
+            sorted(
+                self._summaries,
+                key=lambda summary: (key_func(summary) is None, key_func(summary)),
+                reverse=not ascending,
+            )
+        )
+        self._render_summary_table(selected)
 
     def _on_summary_selection_changed(self) -> None:
         if self.summary_table.selectionModel().hasSelection():
@@ -618,18 +676,8 @@ class TrackingDashboardDialog(QDialog):
         self._detail_blocked = [
             bool(row.issue_codes) and not row.warning_confirmed for row in rows
         ]
-        detail_signals_blocked = self.detail_table.blockSignals(True)
-        try:
-            self.detail_table.setRowCount(len(rows))
-            for row_index, row in enumerate(rows):
-                values = _detail_values(row, row_index + 1)
-                for column, value in enumerate(values):
-                    item = QTableWidgetItem(value)
-                    self.detail_table.setItem(row_index, column, item)
-        finally:
-            self.detail_table.blockSignals(detail_signals_blocked)
-        self.detail_table.resizeColumnsToContents()
-        self._repaint_detail_rows()
+        self._detail_column_sort = None
+        self._render_detail_table()
         if summary.blockers:
             self.guidance_label.setText(
                 "수정 안내\n"
@@ -643,6 +691,40 @@ class TrackingDashboardDialog(QDialog):
         else:
             self.guidance_label.setText("현재 최종 표를 차단하는 문제가 없습니다.")
             self.guidance_label.setStyleSheet("")
+
+    def _render_detail_table(self) -> None:
+        detail_signals_blocked = self.detail_table.blockSignals(True)
+        try:
+            self.detail_table.setRowCount(len(self._detail_rows))
+            for row_index, row in enumerate(self._detail_rows):
+                values = _detail_values(row, row_index + 1)
+                for column, value in enumerate(values):
+                    item = QTableWidgetItem(value)
+                    self.detail_table.setItem(row_index, column, item)
+        finally:
+            self.detail_table.blockSignals(detail_signals_blocked)
+        if not self._detail_sized:
+            self.detail_table.resizeColumnsToContents()
+            self._detail_sized = True
+        self._repaint_detail_rows()
+
+    def _detail_header_clicked(self, column: int) -> None:
+        key_func = _DETAIL_SORTABLE_COLUMNS.get(_DETAIL_HEADERS[column])
+        if key_func is None or not self._detail_rows:
+            return
+        if self._detail_column_sort and self._detail_column_sort[0] == column:
+            ascending = not self._detail_column_sort[1]
+        else:
+            ascending = True
+        self._detail_column_sort = (column, ascending)
+        paired = sorted(
+            zip(self._detail_rows, self._detail_blocked),
+            key=lambda pair: (key_func(pair[0]) is None, key_func(pair[0])),
+            reverse=not ascending,
+        )
+        self._detail_rows = tuple(row for row, _blocked in paired)
+        self._detail_blocked = [blocked for _row, blocked in paired]
+        self._render_detail_table()
 
     def _edit_detail_row(self, row_index: int) -> None:
         if row_index < 0 or row_index >= len(self._detail_rows):

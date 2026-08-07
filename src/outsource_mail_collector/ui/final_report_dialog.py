@@ -200,9 +200,12 @@ def _preview_table(
     table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
     table.verticalHeader().setVisible(False)
     table.horizontalHeader().setSectionResizeMode(
-        QHeaderView.ResizeMode.ResizeToContents
+        QHeaderView.ResizeMode.Interactive
     )
     table.horizontalHeader().setStretchLastSection(True)
+    # ponytail: 이 표의 행 순서는 실제 최종 확정/복사되는 순서와 같아야 하므로
+    # 제목 클릭 정렬은 지원하지 않는다(정렬하면 화면과 실제 반영 순서가
+    # 어긋난다). 열 너비 조절만 지원.
     for column, header in enumerate(_HEADERS):
         help_key = {
             "투입 공수": "확정 투입",
@@ -225,6 +228,7 @@ def _preview_table(
                     item.toolTip() + "\n확인 필요: " + "; ".join(details)
                 )
             table.setItem(row_index, column, item)
+    table.resizeColumnsToContents()
     return table
 
 

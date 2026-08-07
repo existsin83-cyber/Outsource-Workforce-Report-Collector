@@ -44,8 +44,6 @@ class CollectionWorker(QThread):
     def __init__(
         self,
         received_date,
-        work_date_from,
-        work_date_to,
         folder_path: str,
         mail_service: MailCollectionService,
         orchestrator: ExtractionOrchestrator,
@@ -53,8 +51,6 @@ class CollectionWorker(QThread):
     ) -> None:
         super().__init__()
         self._received_date = received_date
-        self._work_date_from = work_date_from
-        self._work_date_to = work_date_to
         self._folder_path = folder_path
         self._mail_service = mail_service
         self._orchestrator = orchestrator
@@ -69,18 +65,15 @@ class CollectionWorker(QThread):
                 self._received_date, self._folder_path
             )
             extraction = self._orchestrator.process(collection.mails)
-            self._work_report_service.synchronize_extracted_records(
+            rows = self._work_report_service.synchronize_extracted_records(
                 extraction.records
-            )
-            range_result = self._work_report_service.list_rows(
-                self._work_date_from, self._work_date_to
             )
             self.completed.emit(
                 CollectionWorkflowResult(
                     collection,
                     extraction,
                     extraction.records,
-                    range_result.rows,
+                    tuple(rows),
                 )
             )
         except (OSError, RuntimeError, ValueError, pywintypes.com_error) as exc:

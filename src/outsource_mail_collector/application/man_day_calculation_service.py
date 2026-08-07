@@ -49,11 +49,13 @@ class ManDayCalculationService:
         )
 
         if reported is None:
+            # 메일 작성자마다 양식이 달라 당일 투입 공수를 따로 적지 않고
+            # 실제/야근 인원만 보고하는 경우가 흔하다 - 정상적인 작성 방식이므로
+            # 검토 필요 경고로 취급하지 않는다. 인원수로 계산한 값을 그대로 쓴다.
             return ManDayValues(
                 reported=None,
                 calculated=calculated,
                 confirmed_candidate=calculated,
-                issues=(WorkReportIssueCode.DAILY_MISSING,),
             )
         if reported != calculated:
             return ManDayValues(

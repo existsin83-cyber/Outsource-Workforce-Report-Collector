@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from decimal import Decimal
+from typing import Any
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont
@@ -18,7 +20,10 @@ from PySide6.QtWidgets import (
 
 from outsource_mail_collector.application.models import WorkReportRow
 from outsource_mail_collector.domain.models import ReviewStatus
-from outsource_mail_collector.domain.work_report import man_day_basis
+from outsource_mail_collector.domain.work_report import (
+    WorkReportIssueCode,
+    man_day_basis,
+)
 from outsource_mail_collector.ui.work_report_guidance import (
     COLUMN_HELP,
     issue_action,
@@ -26,10 +31,21 @@ from outsource_mail_collector.ui.work_report_guidance import (
     issue_title,
 )
 
+# 초기 메일 수집 화면은 메일 수집/본문 오류 확인만 담당한다. 이전 확정 누적값
+# 확인이 필요한 이슈는 대시보드(tracking_dashboard_service)의 책임이므로 여기서는
+# 표시하지 않는다.
+_DASHBOARD_ONLY_ISSUE_CODES = frozenset(
+    {
+        WorkReportIssueCode.CUMULATIVE_BASELINE_REQUIRED,
+        WorkReportIssueCode.CUMULATIVE_BASELINE_CONFIRMATION,
+    }
+)
+
 
 _COLUMNS = (
     "",
     "No.",
+    "확정",
     "작업일",
     "담당자",
     "거래처명",
@@ -44,17 +60,22 @@ _COLUMNS = (
     "확정 투입",
     "메일 누적",
     "검증 상태",
-    "포함",
-    "작업",
 )
 _SELECT_ALL_UNCHECKED = "☐"
 _SELECT_ALL_CHECKED = "☑"
-_INCLUDED_COLUMN = _COLUMNS.index("포함")
-_ACTIONS_COLUMN = _COLUMNS.index("작업")
+_CONFIRM_COLUMN = _COLUMNS.index("확정")
+_CONFIRM_CELL_TEXT = "확정"
+_UNCONFIRMED_CELL_TEXT = "미확정"
 _DEFAULT_BACKGROUND = QColor("#f5f5f5")
 _DEFAULT_FOREGROUND = QColor("#1a1a1a")
 _PROBLEM_BACKGROUND = QColor("#fff3e0")
 _PROBLEM_FOREGROUND = QColor("#4a1f00")
+_CONFIRMED_BACKGROUND = QColor("#e8f5e9")
+_CONFIRMED_FOREGROUND = QColor("#1b5e20")
+_CONFIRM_DONE_BACKGROUND = QColor("#2e7d32")
+_CONFIRM_DONE_FOREGROUND = QColor("#ffffff")
+_CONFIRM_ACTION_BACKGROUND = QColor("#e65100")
+_CONFIRM_ACTION_FOREGROUND = QColor("#ffffff")
 _REVIEW_STATUS_LABELS = {
     ReviewStatus.NORMAL: "정상",
     ReviewStatus.EQUIPMENT_UNCONFIRMED: "장비명 미확인",
@@ -70,14 +91,27 @@ _REVIEW_STATUS_LABELS = {
     ReviewStatus.REVIEWED: "검토 완료",
     ReviewStatus.EXCLUDED: "반영 제외",
 }
+_SORTABLE_COLUMNS: dict[str, Callable[[WorkReportRow], Any]] = {
+    "작업일": lambda row: row.work_date,
+    "담당자": lambda row: row.sender_name or "",
+    "거래처명": lambda row: row.vendor_name or "",
+    "Tracking No.": lambda row: row.tracking_no or "",
+    "장비명": lambda row: row.equipment_name or "",
+    "사업팀": lambda row: row.business_team or "",
+    "실제 작업인원": lambda row: row.actual_headcount,
+    "야근 인원": lambda row: row.night_headcount,
+    "메일 투입": lambda row: row.reported_daily_man_day,
+    "계산 투입": lambda row: row.calculated_daily_man_day,
+    "확정 투입": lambda row: row.confirmed_daily_man_day,
+    "메일 누적": lambda row: row.reported_cumulative_man_day,
+}
 
 
 class ReviewGridWidget(QTableWidget):
     """Display compilation rows while delegating decisions to application services."""
 
-    original_requested = Signal(str)
-    inclusion_requested = Signal(int, bool)
     review_requested = Signal(int)
+    confirm_requested = Signal(int)
 
     def __init__(
         self,
@@ -85,6 +119,9 @@ class ReviewGridWidget(QTableWidget):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(0, len(_COLUMNS), parent)
+        self._rows: list[WorkReportRow] = []
+        self._sort_column: int | None = None
+        self._sort_ascending = True
         self.setHorizontalHeaderLabels(_COLUMNS)
         for column, name in enumerate(_COLUMNS):
             self.horizontalHeaderItem(column).setToolTip(
@@ -100,8 +137,12 @@ class ReviewGridWidget(QTableWidget):
                 self._sync_select_all_header() if item.column() == 0 else None
             )
         )
+        self.cellDoubleClicked.connect(
+            lambda row_index, _column: self._emit_review(row_index)
+        )
+        self.cellClicked.connect(self._cell_clicked)
         self.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.ResizeToContents
+            QHeaderView.ResizeMode.Interactive
         )
         self.horizontalHeader().setStretchLastSection(True)
         self.verticalHeader().setVisible(False)
@@ -109,21 +150,55 @@ class ReviewGridWidget(QTableWidget):
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         # ponytail: 다크 모드에서는 팔레트 Base 색이 거의 검정이라, 선택 셀에
         # 배경/글자색을 명시하지 않으면 선택한 행이 읽을 수 없는 검은 바탕이
-        # 된다(review_grid 는 문제 행에만 배경을 칠하고 나머지는 팔레트에
-        # 맡기기 때문). 대시보드의 강조색(#1565c0)과 맞춘다.
+        # 된다. 대시보드의 강조색(#1565c0)과 맞춘다.
+        # 주의: QTableWidget::item 에 background/color를 직접 지정하면 Qt가
+        # 각 셀에 setBackground()/setForeground()로 지정한 색(확정/문제 행
+        # 배경, 확정 칸 배지 등)을 전부 무시하고 이 규칙으로 덮어써 버린다.
+        # 그래서 unselected 상태 규칙은 넣지 않는다 - _populate_row가 모든
+        # 셀에 배경/글자색을 명시적으로 지정하므로 기본값 없이도 회색으로
+        # 보인다.
         self.setStyleSheet(
             "QTableWidget {background:#f5f5f5;color:#1a1a1a;}"
-            "QTableWidget::item {background:#f5f5f5;color:#1a1a1a;}"
             "QTableWidget::item:selected {background:#1565c0;color:#ffffff;}"
             "QTableWidget::item:selected:!active {background:#90caf9;color:#1a1a1a;}"
             "QTableWidget::item:focus {background:#1565c0;color:#ffffff;}"
+            "QScrollBar:horizontal {background:#dcdcdc;height:14px;margin:0;}"
+            "QScrollBar:vertical {background:#dcdcdc;width:14px;margin:0;}"
+            "QScrollBar::handle {background:#5f6b7a;border-radius:6px;}"
+            "QScrollBar::handle:horizontal {min-width:48px;}"
+            "QScrollBar::handle:vertical {min-height:48px;}"
+            "QScrollBar::handle:hover {background:#37474f;}"
+            "QScrollBar::add-line, QScrollBar::sub-line {width:0;height:0;}"
+            "QScrollBar::add-page, QScrollBar::sub-page {background:#dcdcdc;}"
         )
         if rows:
             self.set_rows(rows)
+        self.resizeColumnsToContents()
+
+    def _emit_review(self, row_index: int) -> None:
+        item = self.item(row_index, 0)
+        if item is not None:
+            self.review_requested.emit(int(item.data(Qt.ItemDataRole.UserRole)))
+
+    def _cell_clicked(self, row_index: int, column: int) -> None:
+        if column != _CONFIRM_COLUMN:
+            return
+        item = self.item(row_index, _CONFIRM_COLUMN)
+        if item is None or item.text() != _UNCONFIRMED_CELL_TEXT:
+            return
+        self.confirm_requested.emit(int(item.data(Qt.ItemDataRole.UserRole)))
+
+    def current_row_id(self) -> int | None:
+        item = self.item(self.currentRow(), 0)
+        return None if item is None else int(item.data(Qt.ItemDataRole.UserRole))
 
     def set_rows(self, rows: list[WorkReportRow]) -> None:
-        self.setRowCount(len(rows))
-        for row_index, row in enumerate(rows):
+        self._rows = list(rows)
+        self._render_rows()
+
+    def _render_rows(self) -> None:
+        self.setRowCount(len(self._rows))
+        for row_index, row in enumerate(self._rows):
             self._populate_row(row_index, row)
         self._sync_select_all_header()
 
@@ -133,21 +208,47 @@ class ReviewGridWidget(QTableWidget):
         )
         for row_index in range(self.rowCount()):
             item = self.item(row_index, 0)
-            if item is not None:
+            if item is not None and (
+                item.flags() & Qt.ItemFlag.ItemIsUserCheckable
+            ):
                 item.setCheckState(state)
         self._sync_select_all_header()
 
     def _header_clicked(self, column: int) -> None:
-        if column != 0:
+        if column == 0:
+            self.set_all_checked(
+                self.horizontalHeaderItem(0).text() != _SELECT_ALL_CHECKED
+            )
             return
-        self.set_all_checked(
-            self.horizontalHeaderItem(0).text() != _SELECT_ALL_CHECKED
+        key_func = _SORTABLE_COLUMNS.get(_COLUMNS[column])
+        if key_func is None or not self._rows:
+            return
+        if self._sort_column == column:
+            self._sort_ascending = not self._sort_ascending
+        else:
+            self._sort_column = column
+            self._sort_ascending = True
+        checked_ids = set(self.checked_row_ids())
+        self._rows.sort(
+            key=lambda row: (key_func(row) is None, key_func(row)),
+            reverse=not self._sort_ascending,
         )
+        self._render_rows()
+        for row_index in range(self.rowCount()):
+            item = self.item(row_index, 0)
+            if item is not None and int(item.data(Qt.ItemDataRole.UserRole)) in checked_ids:
+                item.setCheckState(Qt.CheckState.Checked)
+        self._sync_select_all_header()
 
     def _sync_select_all_header(self) -> None:
-        all_checked = self.rowCount() > 0 and len(
-            self.checked_row_ids()
-        ) == self.rowCount()
+        # 확정된 행은 체크 자체가 불가능하므로 선택 가능한 행만 기준으로 센다.
+        selectable = sum(
+            1
+            for row_index in range(self.rowCount())
+            if (item := self.item(row_index, 0)) is not None
+            and (item.flags() & Qt.ItemFlag.ItemIsUserCheckable)
+        )
+        all_checked = selectable > 0 and len(self.checked_row_ids()) == selectable
         self.horizontalHeaderItem(0).setText(
             _SELECT_ALL_CHECKED if all_checked else _SELECT_ALL_UNCHECKED
         )
@@ -161,28 +262,79 @@ class ReviewGridWidget(QTableWidget):
         return result
 
     def _populate_row(self, row_index: int, row: WorkReportRow) -> None:
+        problem = bool(row.issue_codes) and not row.warning_confirmed
+        confirmed = row.confirmed_daily_man_day is not None
+        if confirmed:
+            background, foreground = (
+                _CONFIRMED_BACKGROUND,
+                _CONFIRMED_FOREGROUND,
+            )
+        elif problem:
+            background, foreground = _PROBLEM_BACKGROUND, _PROBLEM_FOREGROUND
+        else:
+            background, foreground = _DEFAULT_BACKGROUND, _DEFAULT_FOREGROUND
+
         selector = QTableWidgetItem()
-        selector.setFlags(
-            Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
-        )
         selector.setCheckState(Qt.CheckState.Unchecked)
         selector.setData(Qt.ItemDataRole.UserRole, row.row_id)
-        selector.setToolTip("행 선택: 현재 표시값은 선택되지 않음입니다.")
-        problem = bool(row.issue_codes) and not row.warning_confirmed
-        selector.setBackground(_DEFAULT_BACKGROUND)
-        selector.setForeground(_DEFAULT_FOREGROUND)
-        if problem:
-            selector.setBackground(_PROBLEM_BACKGROUND)
-            selector.setForeground(_PROBLEM_FOREGROUND)
+        if confirmed:
+            # 이미 확정되어 대시보드로 넘어간 행은 다시 확정 대상이 될 수 없다.
+            selector.setFlags(Qt.ItemFlag.NoItemFlags)
+            selector.setToolTip("공수가 확정되어 대시보드에 반영된 행입니다.")
+        else:
+            selector.setFlags(
+                Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
+            )
+            selector.setToolTip("행 선택: 현재 표시값은 선택되지 않음입니다.")
+        selector.setBackground(background)
+        selector.setForeground(foreground)
         self.setItem(row_index, 0, selector)
 
+        no_item = QTableWidgetItem(str(row_index + 1))
+        no_item.setFlags(no_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        no_item.setBackground(background)
+        no_item.setForeground(foreground)
+        no_item.setToolTip(
+            f"{COLUMN_HELP[_COLUMNS[1]]}\n현재 표시값: {no_item.text()}"
+        )
+        if not row.included or row.review_status is ReviewStatus.EXCLUDED:
+            font = QFont(no_item.font())
+            font.setStrikeOut(True)
+            no_item.setFont(font)
+        self.setItem(row_index, 1, no_item)
+
+        confirm_item = QTableWidgetItem(
+            _CONFIRM_CELL_TEXT if confirmed else _UNCONFIRMED_CELL_TEXT
+        )
+        confirm_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        confirm_item.setFlags(confirm_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        confirm_item.setData(Qt.ItemDataRole.UserRole, row.row_id)
+        font = QFont(confirm_item.font())
+        font.setBold(True)
+        confirm_item.setFont(font)
+        if confirmed:
+            # 확정 배지는 행 배경보다 진한 녹색으로 채워 눈에 확 띄게 한다.
+            confirm_item.setBackground(_CONFIRM_DONE_BACKGROUND)
+            confirm_item.setForeground(_CONFIRM_DONE_FOREGROUND)
+            confirm_item.setToolTip("공수가 확정되어 대시보드에 반영된 행입니다.")
+        else:
+            # 미확정 칸은 버튼처럼 보이도록 강조색을 채워 클릭 가능함을 알린다.
+            confirm_item.setBackground(_CONFIRM_ACTION_BACKGROUND)
+            confirm_item.setForeground(_CONFIRM_ACTION_FOREGROUND)
+            confirm_item.setToolTip("클릭하면 이 행의 공수를 확정합니다.")
+        self.setItem(row_index, _CONFIRM_COLUMN, confirm_item)
+
+        visible_issues = [
+            issue
+            for issue in row.issue_codes
+            if issue not in _DASHBOARD_ONLY_ISSUE_CODES
+        ]
         issue_text = (
-            ", ".join(issue_title(issue) for issue in row.issue_codes)
-            if row.issue_codes
+            ", ".join(issue_title(issue) for issue in visible_issues)
+            if visible_issues
             else _review_status_text(row.review_status)
         )
         values = (
-            str(row_index + 1),
             row.work_date.isoformat() if row.work_date else "확인 필요",
             row.sender_name or "",
             row.vendor_name or "",
@@ -198,14 +350,12 @@ class ReviewGridWidget(QTableWidget):
             _display_decimal(row.reported_cumulative_man_day),
             issue_text,
         )
-        for column, value in enumerate(values, start=1):
+        for offset, value in enumerate(values):
+            column = _CONFIRM_COLUMN + 1 + offset
             item = QTableWidgetItem(value)
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            item.setBackground(_DEFAULT_BACKGROUND)
-            item.setForeground(_DEFAULT_FOREGROUND)
-            if problem:
-                item.setBackground(_PROBLEM_BACKGROUND)
-                item.setForeground(_PROBLEM_FOREGROUND)
+            item.setBackground(background)
+            item.setForeground(foreground)
             item.setToolTip(
                 f"{COLUMN_HELP[_COLUMNS[column]]}\n현재 표시값: {value or '없음'}"
             )
@@ -215,75 +365,15 @@ class ReviewGridWidget(QTableWidget):
                 item.setFont(font)
             self.setItem(row_index, column, item)
 
-        included = QTableWidgetItem("포함" if row.included else "제외")
-        included.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        included.setFlags(included.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        included.setBackground(_DEFAULT_BACKGROUND)
-        included.setForeground(_DEFAULT_FOREGROUND)
-        included.setToolTip(
-            f"{COLUMN_HELP['포함']}\n현재 표시값: {included.text()}"
-        )
-        if not row.included:
-            font = QFont(included.font())
-            font.setStrikeOut(True)
-            included.setFont(font)
-        if problem:
-            included.setBackground(_PROBLEM_BACKGROUND)
-            included.setForeground(_PROBLEM_FOREGROUND)
-        self.setItem(row_index, _INCLUDED_COLUMN, included)
         status = self.item(row_index, _COLUMNS.index("검증 상태"))
-        if status is not None and row.issue_codes:
+        if status is not None and visible_issues:
             status.setToolTip(
                 "\n".join(
                     f"{issue_title(issue)}: {issue_detail(issue)} "
                     f"조치: {issue_action(issue)}"
-                    for issue in row.issue_codes
+                    for issue in visible_issues
                 )
             )
-        self.setCellWidget(
-            row_index, _ACTIONS_COLUMN, self._row_actions(row)
-        )
-
-    def _row_actions(self, row: WorkReportRow) -> QWidget:
-        container = QWidget()
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
-        if row.mail_entry_id:
-            original = QToolButton()
-            original.setText("원본")
-            original.setToolTip("원본 메일: 해당 작업보고 메일을 엽니다.")
-            original.clicked.connect(
-                lambda _checked=False, entry_id=row.mail_entry_id: (
-                    self.original_requested.emit(entry_id)
-                )
-            )
-            layout.addWidget(original)
-        review = QToolButton()
-        review.setText("확인")
-        review.setToolTip(
-            "확인: 행을 검토하고 확정값을 입력합니다. "
-            "수주 미등록 같은 구조적 문제는 먼저 설정에서 수정해야 합니다."
-        )
-        review.clicked.connect(
-            lambda _checked=False, row_id=row.row_id: (
-                self.review_requested.emit(row_id)
-            )
-        )
-        inclusion = QToolButton()
-        inclusion.setText("제외" if row.included else "제외 취소")
-        inclusion.setToolTip(
-            "제외: 이 행을 대시보드와 최종 표에서 제외합니다."
-            if row.included
-            else "제외 취소: 이 행을 다시 대시보드와 최종 표에 포함합니다."
-        )
-        inclusion.clicked.connect(
-            lambda _checked=False, row_id=row.row_id, included=not row.included: (
-                self.inclusion_requested.emit(row_id, included)
-            )
-        )
-        layout.addWidget(review)
-        layout.addWidget(inclusion)
-        return container
 
 
 def _display_decimal(value: Decimal | None) -> str:

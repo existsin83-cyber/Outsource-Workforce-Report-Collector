@@ -48,7 +48,7 @@ class ProblemReviewDialog(QDialog):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("문제 행 확인")
+        self.setWindowTitle("행 수정")
         self._duplicate_mode = duplicate_mode
         self._headcount_correction = (
             headcount_correction

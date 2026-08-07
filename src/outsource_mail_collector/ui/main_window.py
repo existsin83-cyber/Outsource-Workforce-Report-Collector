@@ -76,9 +76,8 @@ class MainWindow(QMainWindow):
         self.missing_banner.hide()
         layout.addWidget(self.missing_banner)
         self.review_grid = ReviewGridWidget()
-        self.review_grid.original_requested.connect(self._open_original)
-        self.review_grid.inclusion_requested.connect(self._set_row_included)
-        self.review_grid.review_requested.connect(self._review_problem_row)
+        self.review_grid.review_requested.connect(self._review_selected)
+        self.review_grid.confirm_requested.connect(self._confirm_row_from_grid)
         layout.addWidget(self.review_grid)
         layout.addWidget(self._build_action_bar())
         self.setCentralWidget(central)
@@ -159,6 +158,22 @@ class MainWindow(QMainWindow):
         self.recovery_button.clicked.connect(self._open_deleted_rows)
         self.duplicate_check_button = QPushButton("중복 확인")
         self.duplicate_check_button.clicked.connect(self._open_duplicate_check)
+        self.original_button = QPushButton("원본 메일")
+        self.original_button.clicked.connect(self._open_original_selected)
+        self.review_button = QPushButton("수정")
+        self.review_button.clicked.connect(self._review_selected)
+        self.exclude_button = QPushButton("선택 제외")
+        self.exclude_button.clicked.connect(
+            lambda: self._set_selected_included(False)
+        )
+        self.include_button = QPushButton("제외 취소")
+        self.include_button.clicked.connect(
+            lambda: self._set_selected_included(True)
+        )
+        self.confirm_selected_button = QPushButton("선택 공수 확정")
+        self.confirm_selected_button.clicked.connect(
+            self._confirm_selected_rows
+        )
         self.dashboard_button = QPushButton("수주 공수 대시보드")
         self.dashboard_button.setStyleSheet(
             "QPushButton {background:#1565c0;color:white;font-weight:700;"
@@ -167,17 +182,17 @@ class MainWindow(QMainWindow):
             "QPushButton:pressed {background:#08306b;}"
         )
         self.dashboard_button.clicked.connect(self._open_tracking_dashboard)
-        self.confirm_selected_button = QPushButton("선택 공수 확정")
-        self.confirm_selected_button.clicked.connect(
-            self._confirm_selected_rows
-        )
         layout.addWidget(self.manual_button)
         layout.addWidget(self.delete_button)
         layout.addWidget(self.recovery_button)
         layout.addWidget(self.duplicate_check_button)
+        layout.addWidget(self.original_button)
+        layout.addWidget(self.review_button)
+        layout.addWidget(self.exclude_button)
+        layout.addWidget(self.include_button)
         layout.addWidget(self.confirm_selected_button)
-        layout.addWidget(self.dashboard_button)
         layout.addStretch()
+        layout.addWidget(self.dashboard_button)
         return bar
 
     def start_collection(self) -> None:
@@ -193,8 +208,6 @@ class MainWindow(QMainWindow):
         self.progress_label.setText("메일 분석 중…")
         worker = CollectionWorker(
             self._qdate_to_date(self.received_date_edit.date()),
-            date_from,
-            date_to,
             self.folder_combo.currentText().strip() or "Inbox",
             self._services.mail_collection_service,
             self._services.extraction_orchestrator,
@@ -212,7 +225,15 @@ class MainWindow(QMainWindow):
         self._last_missing_names = tuple(
             employee.name for employee in result.collection.missing_employees
         )
-        self._apply_rows(result.work_report_rows)
+        # 확정된 행은 새 수집분에 없어도 그리드에서 사라지면 안 된다 - 그래야
+        # 이미 확정한 행을 다시 확정하려는 실수를 막을 수 있다.
+        new_ids = {row.row_id for row in result.work_report_rows}
+        retained_confirmed = tuple(
+            row
+            for row in self._rows
+            if row.row_id not in new_ids and row.confirmed_daily_man_day is not None
+        )
+        self._apply_rows(result.work_report_rows + retained_confirmed)
         errors = result.collection.errors + result.extraction.errors
         if errors:
             QMessageBox.warning(
@@ -245,7 +266,14 @@ class MainWindow(QMainWindow):
         )
         self._last_received_count = 0
         self._last_missing_names = ()
-        self._apply_rows(result.rows)
+        # 새로고침은 지금 화면에 있는 행만 갱신한다. 메일 가져오기가 그리드를
+        # 이번 수집분으로 초기화한 뒤, 확정/수정 후 재조회에서 이전 수집분이
+        # 다시 딸려 들어오지 않게 하기 위함이다.
+        rows = result.rows
+        if self._rows:
+            visible = {row.row_id for row in self._rows}
+            rows = tuple(row for row in result.rows if row.row_id in visible)
+        self._apply_rows(rows)
 
     def _apply_rows(self, rows: tuple[WorkReportRow, ...]) -> None:
         self._rows = tuple(rows)
@@ -253,9 +281,10 @@ class MainWindow(QMainWindow):
         warning_count = sum(
             bool(row.issue_codes) and row.included for row in rows
         )
+        # 이전 확정 누적값 확인(CUMULATIVE_BASELINE_REQUIRED/CONFIRMATION)은
+        # 대시보드 책임이라 초기 수집 화면의 차단 오류 집계에서 제외한다.
         blocking_codes = {
             WorkReportIssueCode.DATE_UNRESOLVED,
-            WorkReportIssueCode.CUMULATIVE_BASELINE_REQUIRED,
             WorkReportIssueCode.DUPLICATE_UNRESOLVED,
             WorkReportIssueCode.SERIES_KEY_MISSING,
             WorkReportIssueCode.INVALID_VALUE,
@@ -288,12 +317,13 @@ class MainWindow(QMainWindow):
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
         try:
-            self._services.work_report_service.add_manual_row(
+            added = self._services.work_report_service.add_manual_row(
                 **dialog.values()
             )
         except ValueError as exc:
             QMessageBox.warning(self, "수동 행 추가 실패", str(exc))
             return
+        self._rows = (*self._rows, added)
         self._reload_rows()
 
     def _review_problem_row(self, row_id: int) -> None:
@@ -329,6 +359,12 @@ class MainWindow(QMainWindow):
                 self, "확정할 행 선택", "공수를 확정할 행을 선택해 주세요."
             )
             return
+        self._confirm_rows(row_ids)
+
+    def _confirm_row_from_grid(self, row_id: int) -> None:
+        self._confirm_rows([row_id])
+
+    def _confirm_rows(self, row_ids: list[int]) -> None:
         try:
             self._services.work_report_service.confirm_rows(
                 row_ids, resolution_note="사용자 선택 일괄 확정"
@@ -338,20 +374,50 @@ class MainWindow(QMainWindow):
             return
         self._reload_rows()
 
-    def _set_row_included(self, row_id: int, included: bool) -> None:
-        try:
-            self._services.work_report_service.set_included(
-                row_id,
-                included,
-                resolution_note=(
-                    "사용자 반영 제외 취소"
-                    if included
-                    else "사용자 반영 제외"
-                ),
+    def _open_original_selected(self) -> None:
+        row_id = self.review_grid.current_row_id()
+        if row_id is None:
+            QMessageBox.information(
+                self, "원본 메일", "열람할 메일 행을 선택해 주세요."
             )
-        except ValueError as exc:
-            QMessageBox.warning(self, "포함 상태 변경 실패", str(exc))
             return
+        row = next((item for item in self._rows if item.row_id == row_id), None)
+        if row is None or not row.mail_entry_id:
+            QMessageBox.information(
+                self, "원본 메일", "수동 추가 행에는 원본 메일이 없습니다."
+            )
+            return
+        self._open_original(row.mail_entry_id)
+
+    def _review_selected(self, row_id: int | None = None) -> None:
+        if row_id is None or isinstance(row_id, bool):
+            row_id = self.review_grid.current_row_id()
+        if row_id is None:
+            QMessageBox.information(
+                self, "행 수정", "수정할 행을 선택해 주세요."
+            )
+            return
+        self._review_problem_row(row_id)
+
+    def _set_selected_included(self, included: bool) -> None:
+        row_ids = self.review_grid.checked_row_ids()
+        if not row_ids:
+            action_name = "제외" if not included else "제외 취소"
+            QMessageBox.information(
+                self, f"선택 {action_name}", f"{action_name}할 행을 선택해 주세요."
+            )
+            return
+        action_note = "사용자 반영 제외" if not included else "사용자 반영 제외 취소"
+        for row_id in row_ids:
+            try:
+                self._services.work_report_service.set_included(
+                    row_id,
+                    included,
+                    resolution_note=action_note,
+                )
+            except ValueError as exc:
+                QMessageBox.warning(self, "포함 상태 변경 실패", str(exc))
+                break
         self._reload_rows()
 
     def _delete_selected_rows(self) -> None:
@@ -423,12 +489,13 @@ class MainWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
         try:
-            self._services.work_report_service.restore_rows(
+            restored = self._services.work_report_service.restore_rows(
                 row_ids, resolution_note=resolution_note
             )
         except ValueError as exc:
             QMessageBox.warning(self, "삭제 항목 복구 실패", str(exc))
             return
+        self._rows = (*self._rows, *restored)
         self._reload_rows()
 
     def _open_tracking_dashboard(self) -> None:

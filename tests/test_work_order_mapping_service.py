@@ -12,47 +12,33 @@ def repository(tmp_path):
     return SQLiteRepository(tmp_path / "collector.db")
 
 
-def test_exact_tracking_maps_vendor_and_team(repository):
+def test_exact_tracking_maps_vendor_team_and_equipment_name(repository):
     mapping = _mapping(repository, "AB260101", "Equipment 1")
 
-    result = WorkOrderMappingService(repository).resolve(
-        " ab 260101 ", "Equipment 1"
-    )
+    result = WorkOrderMappingService(repository).resolve(" ab 260101 ")
 
     assert result.vendor_name == mapping.vendor_name
     assert result.business_team == "PKG"
+    assert result.equipment_name == "Equipment 1"
     assert result.issue_codes == ()
 
 
-def test_equipment_mismatch_keeps_mapping_and_warns(repository):
-    _mapping(repository, "AB260101", "Equipment 1")
+def test_master_equipment_name_wins_even_when_mail_wording_differs(repository):
+    """The master registration is the source of truth once a tracking number
+    is registered - the mail's own equipment wording is not consulted."""
+    _mapping(repository, "AB260101", "SEC LAton #58")
 
-    result = WorkOrderMappingService(repository).resolve(
-        "AB260101", "Equipment 2"
-    )
+    result = WorkOrderMappingService(repository).resolve("AB260101")
 
-    assert result.vendor_name == "Vendor A"
-    assert result.business_team == "PKG"
-    assert result.issue_codes == (
-        WorkReportIssueCode.EQUIPMENT_MAPPING_MISMATCH,
-    )
-
-
-def test_equipment_comparison_normalizes_nfkc_whitespace_and_case(repository):
-    _mapping(repository, "AB260101", "Equipment Alpha 1")
-
-    result = WorkOrderMappingService(repository).resolve(
-        "AB260101", "  ｅｑｕｉｐｍｅｎｔ　Ａｌｐｈａ   １  "
-    )
-
-    assert result.vendor_name == "Vendor A"
+    assert result.equipment_name == "SEC LAton #58"
     assert result.issue_codes == ()
 
 
-def test_unregistered_tracking_is_blocked(repository):
-    result = WorkOrderMappingService(repository).resolve("UNKNOWN", "Equipment 1")
+def test_unregistered_tracking_is_blocked_and_has_no_equipment_name(repository):
+    result = WorkOrderMappingService(repository).resolve("UNKNOWN")
 
     assert result.vendor_name is None
+    assert result.equipment_name is None
     assert result.issue_codes == (WorkReportIssueCode.WORK_ORDER_UNREGISTERED,)
 
 

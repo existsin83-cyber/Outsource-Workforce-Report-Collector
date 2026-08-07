@@ -164,7 +164,7 @@ def test_preview_explains_how_to_fix_unregistered_work_order(tmp_path):
     assert "설정" in blocker.message
 
 
-def test_preview_names_the_missing_confirmed_man_day_field(tmp_path):
+def test_preview_skips_rows_whose_daily_man_day_is_not_confirmed(tmp_path):
     repository = SQLiteRepository(tmp_path / "collector.db")
     _create_ready_row(
         repository,
@@ -175,13 +175,10 @@ def test_preview_names_the_missing_confirmed_man_day_field(tmp_path):
 
     preview = FinalReportService(repository).preview()
 
-    blocker = next(
-        item
-        for item in preview.blockers
-        if item.code == "CONFIRMED_MAN_DAY_MISSING"
-    )
-    assert "확정 투입" in blocker.message
-    assert "확정 누적" not in blocker.message
+    # 검토 그리드에서 '선택 공수 확정'을 거치지 않은 행은 최종 보고서로
+    # 넘어가지 않는다. 차단 오류가 아니라 아예 대상이 아니다.
+    assert preview.rows == ()
+    assert preview.blockers == ()
 
 
 def test_preview_names_each_missing_required_field(tmp_path):

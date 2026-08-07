@@ -5,6 +5,7 @@ import pytest
 from fixtures import (
     DATE_BODY_CONFLICTING,
     DATE_BODY_MATCHING,
+    DATE_BODY_UNRELATED_DATE_IN_EQUIPMENT_SECTION,
     DATE_SUBJECT_DOTTED,
     DATE_SUBJECT_KOREAN,
     DATE_SUBJECT_UNDERSCORE,
@@ -44,6 +45,20 @@ def test_conflicting_body_date_keeps_subject_and_warns() -> None:
     assert result.body_date == date(2026, 7, 28)
     assert result.requires_review is True
     assert WorkReportIssueCode.DATE_MISMATCH.value in result.issue_codes
+
+
+def test_unrelated_date_inside_equipment_section_does_not_trigger_mismatch() -> None:
+    """Dates inside per-equipment detail lines (입고일, 출하 예정일 등) are not
+    report-date evidence and must not be compared against the subject date."""
+    result = resolve_work_date(
+        DATE_SUBJECT_DOTTED,
+        DATE_BODY_UNRELATED_DATE_IN_EQUIPMENT_SECTION,
+        datetime(2026, 7, 30, 8, 0),
+    )
+
+    assert result.candidate_date == date(2026, 7, 29)
+    assert result.body_date is None
+    assert WorkReportIssueCode.DATE_MISMATCH.value not in result.issue_codes
 
 
 def test_next_day_received_timestamp_does_not_override_subject() -> None:

@@ -56,7 +56,7 @@ def _numbered_header_match(line: str) -> re.Match[str] | None:
 # 검토 대상 표시만 한다.
 
 
-def split_sections(mail_id: str, lines: list[str]) -> list[EquipmentSection]:
+def _classify_header_style(lines: list[str]) -> tuple[bool, bool]:
     # 번호형("1. 2. 3.") 헤더를 쓰는 메일은 장비 경계가 항상 번호 줄이고, 그 아래의
     # 점(.) 상세 줄(호기 진행상황 등)은 새 섹션이 아니다. 단, "1. PCB" 처럼 카테고리
     # 라벨로 번호를 하나만 쓰는 메일도 있어(윤현준 스타일) 번호가 2개 이상 이어질 때만
@@ -67,6 +67,40 @@ def split_sections(mail_id: str, lines: list[str]) -> list[EquipmentSection]:
         not line.startswith((".", "-", "->")) and _UNIT_MARKER.search(line)
         for line in lines
     )
+    return uses_numbered_headers, has_bare_unit_headers
+
+
+def _header_text(
+    line: str, uses_numbered_headers: bool, has_bare_unit_headers: bool
+) -> str | None:
+    numbered_match = _numbered_header_match(line)
+    if numbered_match and (uses_numbered_headers or not has_bare_unit_headers):
+        return numbered_match.group(1)
+    if not uses_numbered_headers:
+        dot_match = _DOT_BULLET.match(line)
+        if dot_match and not _is_field_label_line(dot_match.group(1)):
+            return dot_match.group(1)
+        if not line.startswith((".", "-", "->")) and _UNIT_MARKER.search(line):
+            return line
+    return None
+
+
+def preamble_line_count(lines: list[str]) -> int:
+    """Return how many leading lines precede the first equipment-section header.
+
+    Used to keep whole-mail heuristics (e.g. work-date extraction) out of
+    per-equipment detail lines, where dates unrelated to the report date
+    (입고일, 출하 예정일 등) commonly appear.
+    """
+    uses_numbered_headers, has_bare_unit_headers = _classify_header_style(lines)
+    for index, line in enumerate(lines):
+        if _header_text(line, uses_numbered_headers, has_bare_unit_headers) is not None:
+            return index
+    return len(lines)
+
+
+def split_sections(mail_id: str, lines: list[str]) -> list[EquipmentSection]:
+    uses_numbered_headers, has_bare_unit_headers = _classify_header_style(lines)
 
     sections: list[EquipmentSection] = []
     current_header: str | None = None
@@ -86,20 +120,7 @@ def split_sections(mail_id: str, lines: list[str]) -> list[EquipmentSection]:
             )
 
     for line in lines:
-        header_text: str | None = None
-
-        numbered_match = _numbered_header_match(line)
-        if numbered_match and (uses_numbered_headers or not has_bare_unit_headers):
-            header_text = numbered_match.group(1)
-        elif not uses_numbered_headers:
-            dot_match = _DOT_BULLET.match(line)
-            if dot_match and not _is_field_label_line(dot_match.group(1)):
-                header_text = dot_match.group(1)
-            elif (
-                not line.startswith((".", "-", "->"))
-                and _UNIT_MARKER.search(line)
-            ):
-                header_text = line
+        header_text = _header_text(line, uses_numbered_headers, has_bare_unit_headers)
 
         if header_text is not None:
             flush()

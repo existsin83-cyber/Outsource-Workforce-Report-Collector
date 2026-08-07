@@ -56,6 +56,156 @@
 
 ## 세션 기록
 
+## 2026-08-06 11:34:00 KST — Outlook COM 어댑터 스레드 간 객체 공유 제거 (threading.local 도입) 및 회귀 테스트 복구
+
+### 1. 세션 목표
+
+- OutlookComAdapter 인스턴스의 COM 네임스페이스 객체를 단일 인스턴스 속성(`self._namespace`)이 아닌 스레드별 격리 저장소(`threading.local()`)로 전환하여 스레드 간 COM 참조 경합 및 아파트먼트 모델 위반 해결.
+- `test_connect_retries_once_when_outlook_is_starting` 테스트의 누락되었던 검증문 복구 및 스레드 간 객체 미공유를 검증하는 신규 테스트 추가.
+
+### 2. 시작 시점 상태
+
+- 기준 커밋: `e12f566` (`master`).
+- 기존 사용자 미추적 및 변경 파일 보존.
+
+### 3. 핵심 결정
+
+- `OutlookComAdapter` 내부에 `threading.local()` 인스턴스를 두고, `self._local.namespace` 형태로 스레드마다 완전히 독립된 COM 연결 프록시를 소유하게 결정.
+- `_require_namespace()`에서 죽은 프록시 감지 시 호출한 스레드 자신 저장소(`self._local.namespace`)만 재연결하도록 보장.
+
+### 4. 수행 내용
+
+- `src/outsource_mail_collector/infrastructure/outlook_adapter.py`:
+  - `import threading` 추가.
+  - `OutlookComAdapter.__init__`: `self._local = threading.local()`로 수정 (인스턴스 속성 `self._namespace` 제거).
+  - `connect()`: `self._local.namespace = outlook.GetNamespace("MAPI")`로 수정.
+  - `_require_namespace()`: `self._local.namespace` 읽기/쓰기로 교체.
+- `tests/test_outlook_adapter.py`:
+  - `test_connect_retries_once_when_outlook_is_starting`: `assert attempts == 2`, `assert adapter.list_folders() == ["Inbox"]` 검증문 복구 및 PEP 8 여백 조정.
+  - `test_namespace_is_not_shared_across_threads`: 서브 스레드와 메인 스레드가 각자 독립된 `connect()`로 생성된 서로 다른 네임스페이스 객체를 참조함을 증명하는 테스트 추가.
+
+### 5. 변경 파일
+
+- `src/outsource_mail_collector/infrastructure/outlook_adapter.py`
+- `tests/test_outlook_adapter.py`
+- `HANDOFF.md`
+
+### 6. 검증 결과
+
+- `pytest tests/test_outlook_adapter.py -v`: `8 passed in 0.47s`.
+- `pytest`: `334 passed in 47.12s`.
+
+### 7. 실패 및 미확인 사항
+
+- 실제 Outlook 앱 동작 중 수집 스레드 구동과 UI 원본 메일 클릭 동시 실행 시의 수동 GUI 확인은 자동화 테스트 범위에 포함되지 않음 (mock/fake 객체 기반 스레드 격리 단위 테스트로 대체 검증).
+
+### 8. 현재 상태
+
+- 스레드 간 COM 객체 공유 제거 및 단위 테스트 복구/신규 작성 통과 완료.
+
+### 9. 다음 세션 실행 순서
+
+1. 사용자의 실제 Windows 데스크톱 환경에서 메일 가져오기 실행 도중 검토 그리드에서 "원본 메일" 열기 클릭 시 동시 실행 안정성 수동 확인.
+
+### 10. 위험 및 주의사항
+
+- `CollectionWorker` 스레드는 자체적으로 `pythoncom.CoInitialize()` / `CoUninitialize()` 범위 내에서 `CollectionService`를 실행하며, 이때 `threading.local()`에 할당된 COM 객체는 워커 종료와 함께 자연스럽게 폐기됨.
+
+### 11. Git 및 변경 경계
+
+- 커밋, 푸시, 브랜치 변경 미수행.
+
+### 12. 이전 기록 정정
+
+- 없음.
+
+## 2026-08-06 10:45:00 KST — 검토 그리드 작업 열 하단 이동, 원본 열기 COM 재연결, 제외 행 확정 차단 및 스크롤바 스타일 수정
+
+### 1. 세션 목표
+
+- 검토 그리드에서 매 행 자리를 차지하던 "작업" 열을 제거하고 기능(원본 메일, 수정, 선택 제외, 제외 취소)을 하단 액션 바로 통합.
+- 메일 가져오기 워커 종료 후 발생하는 Outlook COM 캐시 프록시 끊김(`CO_E_OBJNOTCONNECTED`) 재연결 로직 추가.
+- 다이얼로그 명칭 "문제 행 확인" -> "행 수정" 변경 및 더블클릭 연동.
+- 제외된 행이 "선택 공수 확정" 또는 단건 확정으로 연녹색 확정 상태가 되는 문제 차단.
+- 밝은 회색 가로 스크롤바 가시성 개선 및 "수주 공수 대시보드" 버튼 하단 우측 끝 배치.
+
+### 2. 시작 시점 상태
+
+- 기준 커밋: `e12f566` (`master`).
+- 기존 사용자 미추적 및 변경 파일 보존.
+
+### 3. 핵심 결정
+
+- `ReviewGridWidget`의 "작업" 열 및 `cellWidget`을 완전 제거하고, 커서 위치 행(`current_row_id`) 및 체크박스 멀티 셀렉션(`checked_row_ids`) 기반으로 하단 액션 바 버튼 기능 통합.
+- `OutlookComAdapter._require_namespace`에서 dead COM proxy 감지시 `connect()` 재호출로 투명 재연결.
+- `WorkReportService.confirm_row` 및 `confirm_rows`에서 `included`가 `False`인 행 확정 시 `ValueError` 전파.
+
+### 4. 수행 내용
+
+- `src/outsource_mail_collector/ui/review_grid.py`:
+  - `_COLUMNS`에서 "작업" 삭제, `cellWidget` 및 `_row_actions()` 삭제.
+  - `review_requested` 시그널만 남겨 행 더블클릭(`cellDoubleClicked`)에 연결.
+  - `current_row_id()` 헬퍼 추가.
+  - QScrollBar 8개 스타일 규칙 추가.
+- `src/outsource_mail_collector/ui/main_window.py`:
+  - 하단 액션 바 순서 개편 및 우측 끝 대시보드 버튼 배치.
+  - `_open_original_selected()`, `_review_selected()`, `_set_selected_included()` 슬롯 추가.
+- `src/outsource_mail_collector/ui/problem_review_dialog.py`:
+  - 창 제목을 "행 수정"으로 변경.
+- `src/outsource_mail_collector/application/work_report_service.py`:
+  - `confirm_row` 및 `confirm_rows` 검증 루프에 `not row.included` / `not stored.included` 체크 추가.
+- `src/outsource_mail_collector/infrastructure/outlook_adapter.py`:
+  - `_require_namespace()`에서 `self._namespace.CurrentProfileName` 접근 실패시 auto-reconnect.
+- `tests/`:
+  - `test_review_grid.py`, `test_main_window.py`, `test_work_report_service.py`, `test_outlook_adapter.py` 테스트 수정 및 신규 테스트 추가.
+
+### 5. 변경 파일
+
+- `src/outsource_mail_collector/infrastructure/outlook_adapter.py`
+- `src/outsource_mail_collector/application/work_report_service.py`
+- `src/outsource_mail_collector/ui/review_grid.py`
+- `src/outsource_mail_collector/ui/main_window.py`
+- `src/outsource_mail_collector/ui/problem_review_dialog.py`
+- `tests/test_outlook_adapter.py`
+- `tests/test_work_report_service.py`
+- `tests/test_review_grid.py`
+- `tests/test_main_window.py`
+- `HANDOFF.md`
+
+### 6. 검증 결과
+
+- `pytest`: `333 passed in 46.38s`.
+- 전체 단위/통합 자동 테스트 통과.
+
+### 7. 실패 및 미확인 사항
+
+- 실제 Outlook 데스크톱 앱 및 실제 COM 세션에서의 원본 창 표시 수동 테스트는 실행하지 않음 (mock/fake 객체 단위 테스트로 검증).
+
+### 8. 현재 상태
+
+- 요구사항 6종 및 해당 자동 회귀 테스트 작성/통과 완료.
+
+### 9. 다음 세션 실행 순서
+
+1. 사용자의 실제 데스크톱 환경에서 `python -m outsource_mail_collector.app` 실행 후 수동 확인:
+   - 그리드 "작업" 열 제거 및 하단 버튼 배치 확인.
+   - 더블클릭 시 "행 수정" 다이얼로그 오픈 확인.
+   - 메일 수집 후 "원본 메일" 클릭 시 COM 오류 없이 Outlook 원본 메일 창 오픈 확인.
+   - 제외 처리한 행 선택 후 "선택 공수 확정" 시 오류 메시지 발생 및 확정 거부 확인.
+   - 가로 스크롤바 핸들 가시성 확인.
+
+### 10. 위험 및 주의사항
+
+- 수동 추가 행의 경우 `mail_entry_id`가 없으므로 원본 메일 버튼 클릭 시 안내 메시지팝업이 전파됨.
+
+### 11. Git 및 변경 경계
+
+- 커밋, 푸시, 브랜치 변경 미수행.
+
+### 12. 이전 기록 정정
+
+- 없음.
+
 ## 2026-08-05 16:43:26 KST — bare 장비 헤더 및 공수 전용 외주 보고 파싱 보강
 
 ### 1. 세션 목표

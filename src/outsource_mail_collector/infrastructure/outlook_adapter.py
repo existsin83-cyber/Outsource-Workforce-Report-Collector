@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
+import threading
 from typing import Any, Protocol
 
 import pywintypes
@@ -51,7 +52,7 @@ class OutlookComAdapter:
         self, dispatch: Callable[[str], Any] | None = None
     ) -> None:
         self._dispatch = dispatch or _default_dispatch
-        self._namespace: Any | None = None
+        self._local = threading.local()
 
     def connect(self) -> None:
         """Connect with one retry because Outlook startup can race COM registration."""
@@ -60,7 +61,7 @@ class OutlookComAdapter:
         for _ in range(2):
             try:
                 outlook = self._dispatch("Outlook.Application")
-                self._namespace = outlook.GetNamespace("MAPI")
+                self._local.namespace = outlook.GetNamespace("MAPI")
                 return
             except (OSError, pywintypes.com_error) as exc:
                 last_error = exc
@@ -144,9 +145,15 @@ class OutlookComAdapter:
         return current
 
     def _require_namespace(self) -> Any:
-        if self._namespace is None:
-            raise RuntimeError("Outlook 연결이 초기화되지 않았습니다.")
-        return self._namespace
+        namespace = getattr(self._local, "namespace", None)
+        if namespace is not None:
+            try:
+                namespace.CurrentProfileName
+                return namespace
+            except (OSError, pywintypes.com_error):
+                self._local.namespace = None
+        self.connect()
+        return self._local.namespace
 
 
 def _build_date_filter(start_at: datetime, end_at: datetime) -> str:

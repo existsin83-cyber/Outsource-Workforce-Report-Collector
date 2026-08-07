@@ -275,7 +275,6 @@ def test_missing_values_and_unmapped_identity_conflicts_block_without_guessing(
         equipment_name="장비A",
         business_team="팀A",
         actual_headcount=None,
-        confirmed_daily=None,
     )
     second = _create_row(
         repository,
@@ -293,12 +292,34 @@ def test_missing_values_and_unmapped_identity_conflicts_block_without_guessing(
     assert aggregate.equipment_name is None
     assert aggregate.business_team is None
     assert aggregate.actual_headcount is None
-    assert aggregate.confirmed_daily_man_day is None
     assert {blocker.code for blocker in aggregate.blockers} >= {
         "IDENTITY_CONFLICT",
         "REQUIRED_FIELD_MISSING",
-        "CONFIRMED_MAN_DAY_MISSING",
     }
+
+
+def test_unconfirmed_rows_never_reach_the_dashboard(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    confirmed = _create_row(repository, equipment_name="장비확정")
+    _create_row(
+        repository,
+        equipment_name="장비미확정",
+        confirmed_daily=None,
+        confirmed_cumulative=None,
+        calculated_cumulative=None,
+    )
+
+    service = _dashboard_service(repository)
+    aggregates = service.daily_aggregates(date(2026, 7, 29), date(2026, 7, 29))
+
+    assert [
+        row_id
+        for aggregate in aggregates
+        for row_id in aggregate.source_row_ids
+    ] == [confirmed.row_id]
+    assert [row.row_id for row in service.drill_down("AB260101")] == [
+        confirmed.row_id
+    ]
 
 
 def test_active_mapping_is_canonical_for_conflicting_source_identity(tmp_path):

@@ -10,6 +10,7 @@ from outsource_mail_collector.domain.work_report import (
     WorkDateSource,
     WorkReportIssueCode,
 )
+from outsource_mail_collector.parsing.section_parser import preamble_line_count
 
 
 _FULL_DATE_PATTERNS = (
@@ -52,7 +53,7 @@ def resolve_work_date(
     """Prefer subject evidence and never infer a work date from receipt alone."""
 
     subject_date = _extract_date(subject, received_at.year)
-    body_date = _extract_date(body_text, received_at.year)
+    body_date = _extract_date(_preamble_text(body_text), received_at.year)
 
     if subject_date is not None:
         issues: list[str] = []
@@ -89,6 +90,17 @@ def resolve_work_date(
         requires_review=True,
         issue_codes=(WorkReportIssueCode.DATE_UNRESOLVED.value,),
     )
+
+
+def _preamble_text(body_text: str) -> str:
+    """Text before the first equipment section, where the real report date lives.
+
+    Per-equipment detail lines commonly mention unrelated dates (입고일, 출하
+    예정일 등); searching the whole body for a date falsely flags those as a
+    work-date mismatch against the subject.
+    """
+    lines = body_text.splitlines()
+    return "\n".join(lines[: preamble_line_count(lines)])
 
 
 def _extract_date(text: str, default_year: int) -> date | None:

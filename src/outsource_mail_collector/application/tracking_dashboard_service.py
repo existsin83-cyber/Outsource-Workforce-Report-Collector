@@ -222,10 +222,15 @@ class TrackingDashboardService:
         return result
 
     def _active_rows(self) -> list[StoredWorkReportRow]:
+        """확정된 행만 대시보드로 넘긴다. 검토 그리드에서 '선택 공수 확정'을
+        거치지 않은 행은 집계·목록 어디에도 나타나지 않는다."""
+
         return [
             row
             for row in self._repository.list_all_work_report_rows()
-            if row.included and row.deleted_at is None
+            if row.included
+            and row.deleted_at is None
+            and row.confirmed_daily_man_day is not None
         ]
 
     @staticmethod

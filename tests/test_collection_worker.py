@@ -15,7 +15,7 @@ def _app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def test_worker_collects_received_date_then_returns_work_date_range():
+def test_worker_emits_only_rows_from_this_collection():
     _app()
     calls: list[tuple] = []
     collection = CollectionResult(
@@ -39,6 +39,7 @@ def test_worker_collects_received_date_then_returns_work_date_range():
     class WorkService:
         def synchronize_extracted_records(self, records):
             calls.append(("synchronize", records))
+            return list(work_rows)
 
         def list_rows(self, date_from, date_to):
             calls.append(("list", date_from, date_to))
@@ -47,8 +48,6 @@ def test_worker_collects_received_date_then_returns_work_date_range():
     emitted = []
     worker = CollectionWorker(
         date(2026, 7, 30),
-        date(2026, 7, 29),
-        date(2026, 7, 29),
         "Inbox",
         mail_service,
         orchestrator,
@@ -58,10 +57,10 @@ def test_worker_collects_received_date_then_returns_work_date_range():
 
     worker.run()
 
+    # 범위 재조회(list_rows)를 하면 이전 수집분까지 그리드에 딸려 온다.
     assert calls == [
         ("collect", date(2026, 7, 30), "Inbox"),
         ("extract", ("mail",)),
         ("synchronize", ("record",)),
-        ("list", date(2026, 7, 29), date(2026, 7, 29)),
     ]
     assert emitted[0].work_report_rows == work_rows

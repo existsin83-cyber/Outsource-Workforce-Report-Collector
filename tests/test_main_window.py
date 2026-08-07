@@ -47,6 +47,9 @@ def test_window_has_received_date_and_work_date_range_controls():
 def test_apply_collection_result_populates_extended_work_rows():
     _app()
     services = _services()
+    services.work_report_service.rows = [
+        replace(_row(1), confirmed_daily_man_day=None)
+    ]
     window = MainWindow(services)
     workflow = CollectionWorkflowResult(
         collection=CollectionResult(
@@ -69,6 +72,85 @@ def test_apply_collection_result_populates_extended_work_rows():
     assert window.summary_value("대상 인원") == "2"
     assert window.summary_value("수신 메일") == "2"
     assert "김철수" in window.missing_banner.text()
+
+
+def test_cumulative_baseline_issue_does_not_count_as_blocking_on_initial_screen():
+    _app()
+    services = _services()
+    services.work_report_service.rows = [
+        _row(1, issue_codes=(WorkReportIssueCode.CUMULATIVE_BASELINE_REQUIRED,))
+    ]
+    window = MainWindow(services)
+    workflow = CollectionWorkflowResult(
+        collection=CollectionResult(
+            mails=(),
+            missing_employees=(),
+            errors=(),
+            target_employee_count=0,
+            received_mail_count=0,
+        ),
+        extraction=ExtractionResult(records=(), skipped_mail_ids=(), errors=()),
+        records=(),
+        work_report_rows=(
+            _row(
+                1,
+                issue_codes=(WorkReportIssueCode.CUMULATIVE_BASELINE_REQUIRED,),
+            ),
+        ),
+    )
+
+    window.apply_collection_result(workflow)
+
+    assert window.summary_value("차단 오류") == "0"
+
+
+def test_reload_after_collection_never_brings_back_earlier_rows():
+    _app()
+    services = _services()
+    services.work_report_service.rows = [
+        replace(_row(1), confirmed_daily_man_day=None)
+    ]
+    window = MainWindow(services)
+    assert window.review_grid.rowCount() == 1
+    services.work_report_service.rows.append(_row(2))
+
+    window.apply_collection_result(
+        CollectionWorkflowResult(
+            collection=CollectionResult(mails=(), missing_employees=(), errors=()),
+            extraction=ExtractionResult(
+                records=(), skipped_mail_ids=(), errors=()
+            ),
+            records=(),
+            work_report_rows=(_row(2),),
+        )
+    )
+    window._reload_rows()
+
+    assert [row.row_id for row in window._rows] == [2]
+    assert window.review_grid.rowCount() == 1
+
+
+def test_apply_collection_result_retains_earlier_confirmed_rows():
+    """확정된 행은 새 수집분에 없어도 그리드에서 사라지면 안 된다 - 그래야
+    이미 확정한 행을 실수로 다시 확정하지 않는다."""
+    _app()
+    services = _services()
+    window = MainWindow(services)
+    assert window.review_grid.rowCount() == 1
+
+    window.apply_collection_result(
+        CollectionWorkflowResult(
+            collection=CollectionResult(mails=(), missing_employees=(), errors=()),
+            extraction=ExtractionResult(
+                records=(), skipped_mail_ids=(), errors=()
+            ),
+            records=(),
+            work_report_rows=(_row(2),),
+        )
+    )
+
+    assert {row.row_id for row in window._rows} == {1, 2}
+    assert window.review_grid.rowCount() == 2
 
 
 def test_reload_rows_clears_collection_only_received_and_missing_state():
@@ -342,31 +424,65 @@ def test_row_inclusion_toggle_calls_service_and_reloads():
     _app()
     services = _services()
     window = MainWindow(services)
-    buttons = {
-        button.text(): button
-        for button in window.review_grid.cellWidget(0, _COLUMNS.index("작업")).findChildren(
-            QToolButton
-        )
-    }
+    window.review_grid.item(0, 0).setCheckState(Qt.CheckState.Checked)
 
-    buttons["제외"].click()
+    window.exclude_button.click()
 
     assert services.work_report_service.inclusion_calls == [
         (1, False, "사용자 반영 제외")
     ]
-    assert window.review_grid.item(0, _COLUMNS.index("포함")).text() == "제외"
-    buttons = {
-        button.text(): button
-        for button in window.review_grid.cellWidget(0, _COLUMNS.index("작업")).findChildren(
-            QToolButton
-        )
-    }
-    buttons["제외 취소"].click()
+    assert window.review_grid.item(0, _COLUMNS.index("No.")).font().strikeOut()
+
+    window.review_grid.item(0, 0).setCheckState(Qt.CheckState.Checked)
+    window.include_button.click()
     assert services.work_report_service.inclusion_calls[-1] == (
         1,
         True,
         "사용자 반영 제외 취소",
     )
+    assert not window.review_grid.item(0, _COLUMNS.index("No.")).font().strikeOut()
+
+
+def test_original_and_review_buttons_operate_on_cursor_row(monkeypatch):
+    _app()
+    services = _services()
+    services.work_report_service.rows.append(
+        _row(2, mail_entry_id=None, source_type=RowSource.MANUAL)
+    )
+    window = MainWindow(services)
+
+    opened_original: list[str] = []
+    reviewed_rows: list[int] = []
+    info_messages: list[str] = []
+
+    monkeypatch.setattr(
+        window, "_open_original", lambda entry_id: opened_original.append(entry_id)
+    )
+    monkeypatch.setattr(
+        window, "_review_problem_row", lambda row_id: reviewed_rows.append(row_id)
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda _parent, title, text: info_messages.append(f"{title}: {text}"),
+    )
+
+    window.original_button.click()
+    assert "열람할 메일 행을 선택해 주세요." in info_messages[-1]
+
+    window.review_button.click()
+    assert "수정할 행을 선택해 주세요." in info_messages[-1]
+
+    window.review_grid.setCurrentCell(0, 2)
+    window.original_button.click()
+    assert opened_original == ["ENTRY-1"]
+
+    window.review_button.click()
+    assert reviewed_rows == [1]
+
+    window.review_grid.setCurrentCell(1, 2)
+    window.original_button.click()
+    assert "수동 추가 행에는 원본 메일이 없습니다." in info_messages[-1]
 
 
 def test_bulk_soft_delete_confirms_outlook_is_untouched_and_reloads(monkeypatch):
@@ -876,14 +992,21 @@ def _dashboard_summary() -> TrackingDashboardSummary:
 def _row(
     row_id: int,
     *,
+    source_type: RowSource = RowSource.MAIL,
+    mail_entry_id: str | None = None,
     night_headcount: int | None = 2,
     issue_codes: tuple[WorkReportIssueCode, ...] = (),
 ) -> WorkReportRow:
+    resolved_entry_id = (
+        mail_entry_id
+        if mail_entry_id is not None or source_type is RowSource.MANUAL
+        else f"ENTRY-{row_id}"
+    )
     return WorkReportRow(
         row_id=row_id,
-        source_type=RowSource.MAIL,
-        extracted_record_id=row_id,
-        mail_entry_id=f"ENTRY-{row_id}",
+        source_type=source_type,
+        extracted_record_id=row_id if source_type is RowSource.MAIL else None,
+        mail_entry_id=resolved_entry_id,
         work_date=date.today(),
         work_date_confirmed=True,
         vendor_name="업체A",

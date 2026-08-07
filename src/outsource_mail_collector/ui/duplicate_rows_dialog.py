@@ -49,10 +49,12 @@ class DuplicateRowsDialog(QDialog):
         table.setHorizontalHeaderLabels(_HEADERS)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.ResizeToContents
+            QHeaderView.ResizeMode.Interactive
         )
         table.horizontalHeader().setStretchLastSection(True)
         table.verticalHeader().setVisible(False)
+        # ponytail: 그룹 사이 빈 행으로 중복 후보를 묶어 보여주므로 제목 클릭
+        # 정렬은 이 구조를 깨뜨린다. 열 너비 조절만 지원한다.
         row_index = 0
         for group_index, group in enumerate(groups):
             for row in group:
@@ -68,6 +70,7 @@ class DuplicateRowsDialog(QDialog):
                 row_index += 1
             if group_index < len(groups) - 1:
                 row_index += 1
+        table.resizeColumnsToContents()
         layout.addWidget(table)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)

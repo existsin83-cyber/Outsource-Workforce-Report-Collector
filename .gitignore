@@ -5,8 +5,11 @@ venv/
 *.egg-info/
 build/
 dist/
-.pytest_cache/
+.pytest-cache/
 .pytest-basetemp-*/
+.pytest-agent-*/
+.claude/
+.superpowers/
 
 # 실 업무 메일/추출 샘플 - 회사 데이터라 git에 올리지 않음
 /samples/

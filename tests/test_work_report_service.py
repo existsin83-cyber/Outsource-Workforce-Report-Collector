@@ -150,33 +150,93 @@ def test_tracking_correction_recomputes_mapping_and_clears_unregistered(tmp_path
     assert WorkReportIssueCode.WORK_ORDER_UNREGISTERED not in updated.issue_codes
 
 
-def test_equipment_correction_clears_mapping_mismatch(tmp_path):
+def test_mail_equipment_wording_is_ignored_in_favor_of_registered_master_name(
+    tmp_path,
+):
+    """Once a tracking number is registered, the master's equipment_name is
+    the source of truth - the mail's own wording is not used or compared."""
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    vendor = repository.save_vendor(None, "Mapped Vendor", [], True)
+    repository.save_work_order_mapping(
+        None, "AB260101", "SEC LAton #58", vendor.vendor_id, "PKG", True
+    )
+    service = _work_report_service(repository)
+
+    original = service.synchronize_extracted_records(
+        [
+            replace(
+                _review_record(equipment_name="LAton58호기"),
+                vendor_name=None,
+                business_team=None,
+            )
+        ]
+    )[0]
+
+    assert original.equipment_name == "SEC LAton #58"
+    assert WorkReportIssueCode.WORK_ORDER_UNREGISTERED not in original.issue_codes
+
+
+def test_registered_master_vendor_clears_stale_vendor_unconfirmed_tag(tmp_path):
+    """VENDOR_UNCONFIRMED is set at parse time when the mail body itself had
+    no vendor name - once the tracking number's master mapping supplies one,
+    the tag is stale and should not keep showing as a review status."""
     repository = SQLiteRepository(tmp_path / "collector.db")
     vendor = repository.save_vendor(None, "Mapped Vendor", [], True)
     repository.save_work_order_mapping(
         None, "AB260101", "Equipment 1", vendor.vendor_id, "PKG", True
     )
     service = _work_report_service(repository)
+
     original = service.synchronize_extracted_records(
         [
             replace(
-                _review_record(equipment_name="Wrong Equipment"),
+                _review_record(),
+                vendor_name=None,
+                business_team=None,
+                review_status=ReviewStatus.VENDOR_UNCONFIRMED,
+            )
+        ]
+    )[0]
+
+    assert original.vendor_name == "Mapped Vendor"
+    assert original.review_status is ReviewStatus.NORMAL
+
+
+def test_unregistered_tracking_keeps_vendor_unconfirmed_tag(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    service = _work_report_service(repository)
+
+    original = service.synchronize_extracted_records(
+        [
+            replace(
+                _review_record(tracking_no="UNKNOWN"),
+                vendor_name=None,
+                business_team=None,
+                review_status=ReviewStatus.VENDOR_UNCONFIRMED,
+            )
+        ]
+    )[0]
+
+    assert original.vendor_name is None
+    assert original.review_status is ReviewStatus.VENDOR_UNCONFIRMED
+
+
+def test_unregistered_tracking_keeps_mail_equipment_name(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    service = _work_report_service(repository)
+
+    original = service.synchronize_extracted_records(
+        [
+            replace(
+                _review_record(tracking_no="UNKNOWN", equipment_name="LAton58호기"),
                 vendor_name=None,
                 business_team=None,
             )
         ]
     )[0]
-    assert WorkReportIssueCode.EQUIPMENT_MAPPING_MISMATCH in original.issue_codes
 
-    updated = service.update_row(
-        original.row_id,
-        {"equipment_name": "Equipment 1"},
-        resolution_note="장비명 원문 확인",
-    )
-
-    assert WorkReportIssueCode.EQUIPMENT_MAPPING_MISMATCH not in (
-        updated.issue_codes
-    )
+    assert original.equipment_name == "LAton58호기"
+    assert WorkReportIssueCode.WORK_ORDER_UNREGISTERED in original.issue_codes
 
 
 def test_mapping_refresh_preserves_user_vendor_and_team_values(tmp_path):
@@ -378,7 +438,7 @@ def test_manual_row_uses_same_calculation_and_can_cover_mail_free_date(tmp_path)
     assert row.mail_entry_id is None
     assert row.calculated_daily_man_day == Decimal("3.0")
     assert row.confirmed_daily_man_day is None
-    assert WorkReportIssueCode.DAILY_MISSING in row.issue_codes
+    assert WorkReportIssueCode.DAILY_MISSING not in row.issue_codes
     assert WorkReportIssueCode.CUMULATIVE_BASELINE_REQUIRED not in row.issue_codes
 
 
@@ -1196,3 +1256,28 @@ def _review_record(
         date_issue_codes=(),
         work_date_confirmed=True,
     )
+
+
+def test_confirm_rows_and_confirm_row_reject_excluded_rows(tmp_path):
+    repository = SQLiteRepository(tmp_path / "collector.db")
+    service = _work_report_service(repository)
+    first = _add_manual_daily(service, date(2026, 7, 30), Decimal("2.0"))
+    second = _add_manual_daily(service, date(2026, 7, 31), Decimal("3.0"))
+
+    service.set_included(first.row_id, False, resolution_note="제외")
+
+    with pytest.raises(ValueError, match="제외된 행은 확정할 수 없습니다"):
+        service.confirm_row(
+            first.row_id,
+            confirmed_daily_man_day=Decimal("2.0"),
+            resolution_note="확정 시도",
+        )
+
+    with pytest.raises(ValueError, match="제외된 행은 확정할 수 없습니다"):
+        service.confirm_rows(
+            [first.row_id, second.row_id],
+            resolution_note="일괄 확정 시도",
+        )
+
+    assert repository.get_work_report_row(first.row_id).confirmed_daily_man_day is None
+    assert repository.get_work_report_row(second.row_id).confirmed_daily_man_day is None
